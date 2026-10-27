@@ -33,6 +33,13 @@ yarn-error.log*
 data/cache/
 data/ledger.jsonl
 
+# npm cache
+.npm-cache/
+
+# raw + prepped test fixtures stay local (upload via script, never commit)
+clips/raw/
+public/clips/prepped/synth-*
+
 # vercel
 .vercel
 
