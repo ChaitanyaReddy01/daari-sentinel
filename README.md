@@ -25,6 +25,7 @@ Commit messages before this point say 'Day 1–3'; these were build steps, all c
 
 | Oct 27 | Step 4b: realistic jam delay, exit-based decide-by, named reroutes |
 | Oct 27 | Step 4c: fix missing clip list on /sim |
+| Oct 27 | Step 4d: fix map zoom with follow mode |
 
 ## Meta models used
 

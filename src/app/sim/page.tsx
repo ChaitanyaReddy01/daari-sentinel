@@ -376,6 +376,8 @@ export default function SimPage() {
   const speedRef = useRef<(typeof SPEEDS)[number]>(10);
   const armingRef = useRef(false);
   const followRef = useRef(true);
+  const lastPanRef = useRef(0);
+  const fitAtRef = useRef(0);
   const mutedRef = useRef(false);
   const incidentsRef = useRef<SimIncident[]>([]);
   const zonesRef = useRef<SlowZone[]>([]);
@@ -639,6 +641,7 @@ export default function SimPage() {
     let overlay: any = null;
     let clickListener: any = null;
     let dragListener: any = null;
+    let zoomListener: any = null;
     (async () => {
       try {
         await loadMapsApi(BROWSER_KEY);
@@ -652,6 +655,8 @@ export default function SimPage() {
           zoom: 9,
           clickableIcons: false,
           gestureHandling: 'greedy',
+          zoomControl: true,
+          scrollwheel: true,
         });
         mapRef2.current = map;
         routeLineRef.current = new google.maps.Polyline({
@@ -664,6 +669,7 @@ export default function SimPage() {
         });
         const bounds = new google.maps.LatLngBounds();
         for (const p of trip.routes[0].geom.points) bounds.extend(p);
+        fitAtRef.current = Date.now();
         map.fitBounds(bounds);
         overlay = createCarsOverlay(google, map, (dots, cong, arrow, projection) => {
           drawScene(dots, cong, arrow, projection);
@@ -686,6 +692,11 @@ export default function SimPage() {
           });
         });
         dragListener = map.addListener('dragstart', () => setFollow(false));
+        // Any zoom change while driving is user-initiated (we never zoom
+        // ourselves after the initial fit): wheel, pinch, or buttons.
+        zoomListener = map.addListener('zoom_changed', () => {
+          if (Date.now() - fitAtRef.current > 1500) setFollow(false);
+        });
         setMapStatus('ready');
       } catch (err) {
         if (!cancelled) {
@@ -698,6 +709,7 @@ export default function SimPage() {
       cancelled = true;
       if (clickListener) googleRef.current?.maps?.event?.removeListener(clickListener);
       if (dragListener) googleRef.current?.maps?.event?.removeListener(dragListener);
+      if (zoomListener) googleRef.current?.maps?.event?.removeListener(zoomListener);
       if (overlay) overlay.setMap(null);
       if (routeLineRef.current) routeLineRef.current.setMap(null);
       for (const m of markersRef.current) m.setMap(null);
@@ -727,17 +739,6 @@ export default function SimPage() {
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tripId, currentIdx]);
-
-  useEffect(() => {
-    const map = mapRef2.current;
-    const trip = tripRef.current;
-    if (!map || !trip || mapStatus !== 'ready') return;
-    const g = trip.routes[0].geom;
-    const bounds = new (googleRef.current as any).maps.LatLngBounds();
-    for (const p of g.points) bounds.extend(p);
-    map.fitBounds(bounds);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tripId]);
 
   const drawScene = (
     dots: HTMLCanvasElement,
@@ -932,9 +933,16 @@ export default function SimPage() {
       }
       if (overlayRef.current) overlayRef.current.draw();
       const map = mapRef2.current;
-      if (map && followRef.current && !yourCarRef.current.arrived) {
+      // Follow mode only pans, at most once per second. Never zoom or fit.
+      if (
+        map &&
+        followRef.current &&
+        !yourCarRef.current.arrived &&
+        now - lastPanRef.current >= 1000
+      ) {
+        lastPanRef.current = now;
         const yp = pointAt(yours, yourCarRef.current.s);
-        map.setCenter({ lat: yp.lat, lng: yp.lng });
+        map.panTo({ lat: yp.lat, lng: yp.lng });
       }
       uiAcc += dtReal;
       if (uiAcc >= 0.25) {
@@ -1768,7 +1776,7 @@ export default function SimPage() {
                 aria-pressed={follow}
                 className={`min-h-[44px] rounded-md border px-3 text-sm font-semibold ${follow ? 'border-blue-700 bg-blue-50 text-blue-700' : 'border-stone-300'}`}
               >
-                Follow me
+                {follow ? 'Follow me' : 'Re-center'}
               </button>
               <button
                 type="button"
