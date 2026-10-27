@@ -15,6 +15,7 @@ built during the hackathon window.
 | ------ | ------------------------------------------- |
 | Oct 27 | Project setup and SAM 3.1 perception lab    |
 | Oct 27 | Verified: build, prep, cached analyze, overlay boxes, 390px layout (live SAM call pending a real API key) |
+| Oct 27 | first live SAM 3.1 runs on real footage; concept list moved to plain objects, Muse Spark will judge incidents |
 
 ## Meta models used
 
@@ -54,3 +55,5 @@ and SAM results are cached under `data/cache/` so repeat runs are free.
 
 | Clip | Source URL | License |
 | ---- | ---------- | ------- |
+| crash-1.mp4 | https://www.pexels.com/video/aerial-shot-of-a-car-accident-on-a-highway-12753260/ | Pexels License |
+| traffic-normal-1.mp4 | https://www.pexels.com/video/busy-urban-street-with-taxis-in-traffic-jam-36911808/ | Pexels License |
