@@ -1458,10 +1458,10 @@ export default function SimPage() {
     setCostConfirm(null);
     (async () => {
       try {
-        const res = await fetch('/api/sim/clips');
+        const res = await fetch('/api/lab/clips');
         if (!res.ok) throw new Error(await readError(res));
-        const data = (await res.json()) as { clips: string[] };
-        setClips(data.clips);
+        const data = (await res.json()) as { clips: { name: string }[] };
+        setClips(data.clips.map((c) => c.name).filter((n) => !n.startsWith('synth-')));
       } catch (err) {
         setClipError(err instanceof Error ? err.message : 'Could not list clips.');
       }

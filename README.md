@@ -24,6 +24,7 @@ built during the hackathon window.
 Commit messages before this point say 'Day 1–3'; these were build steps, all completed on Oct 27, the first building day.
 
 | Oct 27 | Step 4b: realistic jam delay, exit-based decide-by, named reroutes |
+| Oct 27 | Step 4c: fix missing clip list on /sim |
 
 ## Meta models used
 
