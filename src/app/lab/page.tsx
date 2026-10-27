@@ -2,6 +2,8 @@
 
 import { useEffect, useRef, useState } from 'react';
 
+import { formatCount } from '@/lib/format';
+
 interface PreppedClip {
   name: string;
   frameCount: number;
@@ -51,6 +53,8 @@ interface Verdict {
   confidence: number;
   summary: string;
   details: string;
+  peopleOnRoad: number | null;
+  workersOrRespondersVisible: boolean;
 }
 
 interface VerdictCheck {
@@ -112,6 +116,7 @@ export default function LabPage() {
   const [checked, setChecked] = useState<string[]>([]);
   const [summaries, setSummaries] = useState<SamSummary[] | null>(null);
   const [results, setResults] = useState<Record<string, SamResult>>({});
+  const [trueCounts, setTrueCounts] = useState<Record<string, number | null>>({});
   const [selected, setSelected] = useState('');
   const [lastRunCost, setLastRunCost] = useState<number | null>(null);
 
@@ -244,6 +249,7 @@ export default function LabPage() {
     setClip(name);
     setSummaries(null);
     setResults({});
+    setTrueCounts({});
     setPending(null);
     setLastRunCost(null);
     setError(null);
@@ -332,6 +338,19 @@ export default function LabPage() {
         fetched[s.concept] = (await r.json()) as SamResult;
       }
       setResults(fetched);
+      const stills: Record<string, number | null> = {};
+      for (const concept of ['car', 'truck', 'person']) {
+        if (!data.summaries.some((s) => s.concept === concept)) continue;
+        try {
+          const r = await fetch(
+            `/api/lab/stills?clip=${encodeURIComponent(clip)}&concept=${encodeURIComponent(concept)}`,
+          );
+          if (r.ok) stills[concept] = ((await r.json()) as { count: number | null }).count;
+        } catch {
+          // Leave unset; the video count still shows.
+        }
+      }
+      setTrueCounts(stills);
       const withObjects = data.summaries.find((s) => s.objects > 0);
       setSelected(withObjects?.concept ?? data.summaries[0]?.concept ?? '');
     } catch (err) {
@@ -519,6 +538,7 @@ export default function LabPage() {
                   {summaries.map((s) => {
                     const empty = s.objects === 0;
                     const isSelected = s.concept === selected;
+                    const trueCount = trueCounts[s.concept] ?? null;
                     return (
                       <tr
                         key={s.concept}
@@ -536,7 +556,14 @@ export default function LabPage() {
                             </span>
                           ) : null}
                         </td>
-                        <td className="px-2 py-1.5">{s.objects}</td>
+                        <td className="px-2 py-1.5">
+                          {formatCount(s.objects)}
+                          {trueCount !== null && (
+                            <span className="block text-[11px] text-stone-500">
+                              true count (stills): {trueCount}
+                            </span>
+                          )}
+                        </td>
                         <td className="px-2 py-1.5 whitespace-nowrap">
                           {s.firstFrame === null || s.lastFrame === null
                             ? '—'
@@ -552,6 +579,9 @@ export default function LabPage() {
               </table>
               <p className="mt-1 text-xs text-stone-500">
                 Click a row to overlay that concept on the video.
+              </p>
+              <p className="mt-1 text-xs text-stone-500">
+                Counts of 16+ hit the video tracking cap (max 16 objects per frame).
               </p>
             </section>
           )}

@@ -49,19 +49,19 @@
   },
   {
     "clip": "cars-with-police-1",
-    "incident": true,
-    "type": "police_activity",
-    "responders": { "police": true, "ambulance": false, "fire": false, "towTruck": false },
-    "notes": "night highway, verify police visible",
-    "confirmed": false
+    "incident": false,
+    "type": "none",
+    "responders": { "police": false, "ambulance": false, "fire": false, "towTruck": false },
+    "notes": "night highway, no police visible",
+    "confirmed": true
   },
   {
     "clip": "car-police-tow-1",
     "incident": true,
     "type": "crash",
-    "responders": { "police": true, "ambulance": false, "fire": false, "towTruck": true },
-    "notes": "",
-    "confirmed": false
+    "responders": { "police": true, "ambulance": true, "fire": true, "towTruck": true },
+    "notes": "ambulance by the pole where people gathered; fire truck per SAM + Spark, re-check",
+    "confirmed": true
   },
   {
     "clip": "crowd-people-1",
@@ -75,17 +75,17 @@
     "clip": "car-tow-ambulance-police-1",
     "incident": true,
     "type": "crash",
-    "responders": { "police": true, "ambulance": true, "fire": false, "towTruck": true },
-    "notes": "",
-    "confirmed": false
+    "responders": { "police": true, "ambulance": true, "fire": true, "towTruck": true },
+    "notes": "white car beside fire truck is the ambulance, black car in front of it is police",
+    "confirmed": true
   },
   {
     "clip": "car-accident-1",
     "incident": true,
-    "type": "crash",
+    "type": "fire",
     "responders": { "police": false, "ambulance": false, "fire": false, "towTruck": false },
-    "notes": "check responders",
-    "confirmed": false
+    "notes": "burning hay bales on shoulder, smoke",
+    "confirmed": true
   },
   {
     "clip": "dash-cam-car-1",
@@ -98,10 +98,10 @@
   {
     "clip": "ambulance-fire-1",
     "incident": true,
-    "type": "unknown",
-    "responders": { "police": true, "ambulance": true, "fire": true, "towTruck": false },
-    "notes": "night street",
-    "confirmed": false
+    "type": "police_activity",
+    "responders": { "police": true, "ambulance": false, "fire": true, "towTruck": false },
+    "notes": "verdict confirmed by human review",
+    "confirmed": true
   },
   {
     "clip": "rd-construction-1",

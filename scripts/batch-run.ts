@@ -16,6 +16,7 @@ import { fileURLToPath } from 'node:url';
 
 import { hashFile, loadPreppedClip, preppedVideoPath } from '../src/lib/clips';
 import { MUSE_SPARK_MODEL } from '../src/lib/config';
+import { formatCount } from '../src/lib/format';
 import { readSamCache } from '../src/lib/sam-cache';
 import { PROMPT_VERSION, type Verdict } from '../src/lib/verdict';
 import { readVerdictCache } from '../src/lib/verdict-cache';
@@ -49,6 +50,7 @@ interface ClipRow {
   width: number;
   height: number;
   objectsByConcept: Record<string, number | null>;
+  trueCounts: Record<string, number | null>;
   verdict: Verdict | null;
   error: string | null;
 }
@@ -158,9 +160,12 @@ async function main(): Promise<void> {
   const sam = await import('../src/lib/sam');
   const files = await import('../src/lib/files');
   const spark = await import('../src/lib/spark');
+  const stills = await import('../src/lib/stills');
   const { CONCEPTS, estimateCostUSD, getSpend, runSam } = sam;
   const { uploadClip } = files;
   const { runVerdict } = spark;
+  const { STILLS_CONCEPTS, STILLS_PRICE_PER_IMAGE, readStillsCount, runStillsCount, stillFrames } =
+    stills;
 
   // --- Prep pass (no API calls) ---
   const stems = rawClips();
@@ -198,11 +203,19 @@ async function main(): Promise<void> {
       uncachedSam * (Math.max(SAM_MIN_BILLABLE_FRAMES, info.frameCount) / 1000) *
       SAM_PRICE_PER_1K_FRAMES;
     const verdictEst = readVerdictCache(hash) ? 0 : VERDICT_ESTIMATE_USD;
-    const clipEst = samEst + verdictEst;
+    let uncachedStills = 0;
+    for (const frame of stillFrames(info.frameCount, info.fps)) {
+      for (const concept of STILLS_CONCEPTS) {
+        if (readStillsCount(hash, frame, concept) === null) uncachedStills += 1;
+      }
+    }
+    const stillsEst = uncachedStills * STILLS_PRICE_PER_IMAGE;
+    const clipEst = samEst + stillsEst + verdictEst;
     total += clipEst;
     console.log(
       `batch-run: estimate: ${clip}: ${uncachedSam}/${CONCEPTS.length} SAM uncached × ` +
         `${Math.max(SAM_MIN_BILLABLE_FRAMES, info.frameCount)} frames = $${samEst.toFixed(4)}, ` +
+        `stills ${uncachedStills}×$${STILLS_PRICE_PER_IMAGE.toFixed(4)}=$${stillsEst.toFixed(4)}, ` +
         `verdict ${verdictEst > 0 ? `≈$${verdictEst.toFixed(4)}` : '$0 (cached)'} → $${clipEst.toFixed(4)}`,
     );
   }
@@ -230,6 +243,7 @@ async function main(): Promise<void> {
       width: info.width,
       height: info.height,
       objectsByConcept: Object.fromEntries(CONCEPTS.map((c) => [c, null])),
+      trueCounts: Object.fromEntries(STILLS_CONCEPTS.map((c) => [c, null])),
       verdict: null,
       error: null,
     };
@@ -259,6 +273,19 @@ async function main(): Promise<void> {
           `type=${vresult.verdict.type}` +
           (vcached ? ' (cached)' : ` ($${vresult.estUSD.toFixed(6)})`),
       );
+      for (const frame of stillFrames(info.frameCount, info.fps)) {
+        for (const concept of STILLS_CONCEPTS) {
+          const { count, cached: scached } = await runStillsCount({ clip, concept, frame });
+          const prev = row.trueCounts[concept];
+          row.trueCounts[concept] =
+            prev === null || prev === undefined ? count : Math.max(prev, count);
+          if (!scached) batchSpend += STILLS_PRICE_PER_IMAGE;
+        }
+      }
+      console.log(
+        `batch-run: ${clip} [stills true]: ` +
+          STILLS_CONCEPTS.map((c) => `${c}=${row.trueCounts[c] ?? '—'}`).join(' '),
+      );
     } catch (err) {
       row.error = errMessage(err);
       console.error(`batch-run: ${clip} FAILED: ${row.error} (skipping, continuing)`);
@@ -282,7 +309,7 @@ async function main(): Promise<void> {
     const v = row.verdict;
     if (!v || !label) {
       table2Rows.push(
-        `| ${row.clip} | — | — | — | — | ${row.error ? `FAILED: ${row.error}` : 'no verdict'} |`,
+        `| ${row.clip} | — | — | — | — | — | ${row.error ? `FAILED: ${row.error}` : 'no verdict'} |`,
       );
       if (v && !label) disagreeing.push(row);
       continue;
@@ -304,9 +331,10 @@ async function main(): Promise<void> {
     }
     const incidentCell = incidentMatch ? `✓ ${v.incident}` : `✗ V:${v.incident} L:${label.incident}`;
     const typeCell = typeMatch ? `✓ ${v.type}` : `✗ V:${v.type} L:${label.type}`;
+    const peopleCell = v.peopleOnRoad === null ? '—' : String(v.peopleOnRoad);
     const safeSummary = v.summary.replace(/\|/g, '/');
     table2Rows.push(
-      `| ${row.clip} | ${incidentCell} | ${typeCell} | ${v.stage} | ${respMarks.join(' ')} | ${safeSummary} |`,
+      `| ${row.clip} | ${incidentCell} | ${typeCell} | ${peopleCell} | ${v.stage} | ${respMarks.join(' ')} | ${safeSummary} |`,
     );
   }
 
@@ -315,7 +343,10 @@ async function main(): Promise<void> {
   const table1Rows = rows.map((r) => {
     const cells = CONCEPTS.map((c) => {
       const n = r.objectsByConcept[c];
-      return n === null || n === undefined ? '—' : String(n);
+      if (n === null || n === undefined) return '—';
+      const t = r.trueCounts[c];
+      const base = formatCount(n);
+      return t === null || t === undefined ? base : `${base} (stills: ${t})`;
     });
     return `| ${r.clip} | ${r.frames} | ${fmtMB(r.sizeBytes)} | ${orientation(r.width, r.height)} | ${cells.join(' | ')} |`;
   });
@@ -334,10 +365,12 @@ async function main(): Promise<void> {
     `| --- | --- | --- | --- | ${conceptSep} |`,
     ...table1Rows,
     '',
+    'Counts of 16+ hit the video tracking cap (max 16 objects per frame). "stills" = max true count over 3 still frames (image mode, no cap).',
+    '',
     '## Table 2 — Verdict vs ground truth',
     '',
-    '| Clip | Incident | Type | Stage | Responders | Verdict summary |',
-    '| --- | --- | --- | --- | --- | --- |',
+    '| Clip | Incident | Type | People | Stage | Responders | Verdict summary |',
+    '| --- | --- | --- | --- | --- | --- | --- |',
     ...table2Rows,
     '',
     '## Totals',

@@ -16,6 +16,7 @@ export const VerdictSchema = z.object({
     'stalled_vehicle',
     'debris',
     'flooding',
+    'fire',
     'police_activity',
     'construction',
     'none',
@@ -60,12 +61,14 @@ export const VerdictSchema = z.object({
     .string()
     .min(1)
     .refine((s) => wordCount(s) <= 80, 'details must be at most 80 words'),
+  peopleOnRoad: z.number().int().min(0).nullable(),
+  workersOrRespondersVisible: z.boolean(),
 });
 
 export type Verdict = z.infer<typeof VerdictSchema>;
 
 /** Bump to invalidate cached verdicts (prompt or schema changed). */
-export const PROMPT_VERSION = 2;
+export const PROMPT_VERSION = 3;
 
 export const VERDICT_SCHEMA_NAME = 'SceneVerdict';
 
@@ -85,6 +88,7 @@ export const VERDICT_JSON_SCHEMA: Record<string, unknown> = {
         'stalled_vehicle',
         'debris',
         'flooding',
+        'fire',
         'police_activity',
         'construction',
         'none',
@@ -144,6 +148,15 @@ export const VERDICT_JSON_SCHEMA: Record<string, unknown> = {
       minLength: 1,
       description: 'Longer scene description, max 80 words.',
     },
+    peopleOnRoad: {
+      type: ['integer', 'null'],
+      minimum: 0,
+      description: 'People standing on the roadway itself, not on sidewalks.',
+    },
+    workersOrRespondersVisible: {
+      type: 'boolean',
+      description: 'True if road workers or emergency responders are visible.',
+    },
   },
   required: [
     'incident',
@@ -158,6 +171,8 @@ export const VERDICT_JSON_SCHEMA: Record<string, unknown> = {
     'confidence',
     'summary',
     'details',
+    'peopleOnRoad',
+    'workersOrRespondersVisible',
   ],
   additionalProperties: false,
 };

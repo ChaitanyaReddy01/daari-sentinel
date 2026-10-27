@@ -31,7 +31,8 @@ import {
  */
 
 const SYSTEM_PROMPT =
-  "You are a traffic incident analyst reviewing road camera footage. Report only what is visible. If unsure, use 'unknown' or false. Never invent responders that are not visible.";
+  "You are a traffic incident analyst reviewing road camera footage. Report only what is visible. If unsure, use 'unknown' or false. Never invent responders that are not visible. " +
+  'When incident is false, the summary must be neutral and must not tell drivers to avoid the area (e.g. "No incident; heavy but normal traffic.").';
 
 const JSON_ONLY_SUFFIX =
   '\n\nRespond with JSON only, exactly matching this schema (no markdown, no commentary):\n' +

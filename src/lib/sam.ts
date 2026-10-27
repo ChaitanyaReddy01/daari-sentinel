@@ -20,6 +20,7 @@ export const CONCEPTS = [
   'traffic cone',
   'construction vehicle',
   'road barrier',
+  'safety vest',
 ];
 
 export const SAM_MODEL = 'sam-3.1';
