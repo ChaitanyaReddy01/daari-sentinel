@@ -11,6 +11,7 @@ const ROUTES_URL = 'https://routes.googleapis.com/directions/v2:computeRoutes';
 const FIELD_MASK = [
   'routes.duration',
   'routes.distanceMeters',
+  'routes.description',
   'routes.polyline.encodedPolyline',
   'routes.legs.steps.distanceMeters',
   'routes.legs.steps.navigationInstruction',
@@ -27,6 +28,7 @@ export interface TripRoute {
   encodedPolyline: string;
   distanceMeters: number;
   durationSeconds: number;
+  description: string | null;
   steps: TripStep[];
 }
 
@@ -75,7 +77,8 @@ export async function getTrip(req: TripRequest): Promise<{ routes: TripRoute[] }
     .createHash('sha1')
     .update(JSON.stringify({ origin, destination, via: req.via ?? null }))
     .digest('hex');
-  const cachePath = path.join(CACHE_DIR, `trip-${cacheKey}.json`);
+  // trip2-: P4b added routes.description; only trip-* entries are re-fetched.
+  const cachePath = path.join(CACHE_DIR, `trip2-${cacheKey}.json`);
   try {
     const parsed = JSON.parse(fs.readFileSync(cachePath, 'utf8')) as { routes: TripRoute[] };
     if (parsed && Array.isArray(parsed.routes) && parsed.routes.length > 0) return parsed;
@@ -121,6 +124,7 @@ export async function getTrip(req: TripRequest): Promise<{ routes: TripRoute[] }
     routes?: Array<{
       distanceMeters?: number;
       duration?: string;
+      description?: string;
       polyline?: { encodedPolyline?: string };
       legs?: Array<{
         steps?: Array<{
@@ -154,6 +158,7 @@ export async function getTrip(req: TripRequest): Promise<{ routes: TripRoute[] }
       encodedPolyline: poly,
       distanceMeters: r.distanceMeters,
       durationSeconds: seconds ? parseInt(seconds, 10) : 0,
+      description: typeof r.description === 'string' ? r.description : null,
       steps,
     });
   }

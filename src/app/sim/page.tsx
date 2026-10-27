@@ -29,14 +29,18 @@ import {
   type SlowZone,
 } from '@/lib/sim';
 import {
-  altRoadName,
+  WAIT_RESIDUAL_MIN,
   beep,
+  decideByLabel,
   findDivergence,
   minDistanceToRoute,
   offRouteCandidates,
-  projectEtaWithRecovery,
   projectToS,
+  rerouteDelayMin,
+  routeName,
+  routesRemainSec,
   speak,
+  stayDelayRange,
   subPath,
 } from './drive';
 
@@ -54,6 +58,7 @@ interface SimVerdict {
   type: string;
   severity: string | null;
   stage: string;
+  lanesBlocked: string;
   responders: { police: boolean; ambulance: boolean; fire: boolean; towTruck: boolean };
   summary: string;
   evidence: { second: number; what: string }[];
@@ -77,6 +82,7 @@ interface SimIncident {
   reports: SimReport[];
   stage: string;
   severity: string | null;
+  lanesBlocked: string;
   active: boolean;
   thumbnail: string | null;
   responders: SimVerdict['responders'];
@@ -93,6 +99,7 @@ interface TripRouteData {
   encodedPolyline: string;
   distanceMeters: number;
   durationSeconds: number;
+  description: string | null;
   steps: TripStep[];
 }
 
@@ -116,7 +123,7 @@ interface RerouteOption {
   altIdx?: number;
   divergeS?: number;
   altS?: number;
-  viaName?: string | null;
+  viaName?: string;
   decideLabel?: string;
   decideMin?: number;
 }
@@ -132,7 +139,12 @@ interface StopOption {
 
 interface WarningOptions {
   stayArrival: string;
+  stayLoClock: string;
+  stayHiClock: string;
   jamDelayMin: number;
+  jamLoMin: number;
+  jamHiMin: number;
+  mainName: string;
   reroute: RerouteOption;
   stop: StopOption | null;
   fastest: 'stay' | 'reroute' | 'stop';
@@ -174,10 +186,6 @@ function fmtMin(seconds: number): string {
   return `${Math.max(0, Math.round(seconds / 60))} min`;
 }
 
-function stripTags(s: string): string {
-  return s.replace(/<[^>]*>/g, '').trim();
-}
-
 async function readError(res: Response): Promise<string> {
   try {
     const data = (await res.json()) as { error?: unknown };
@@ -210,25 +218,47 @@ function loadMapsApi(key: string): Promise<void> {
   return mapsPromise;
 }
 
-/** Single-canvas car layer: one OverlayView draws every car each frame. */
+/**
+ * Three-canvas overlay in the top pane (polylines render above overlayLayer
+ * in this Maps build): traffic dots, congestion stretches, then your arrow.
+ */
 function createCarsOverlay(
   google: any,
   map: any,
-  draw: (canvas: HTMLCanvasElement, projection: any) => void,
+  draw: (
+    dots: HTMLCanvasElement,
+    cong: HTMLCanvasElement,
+    arrow: HTMLCanvasElement,
+    projection: any,
+  ) => void,
 ): any {
   const overlay = new google.maps.OverlayView();
-  const canvas = document.createElement('canvas');
-  canvas.style.position = 'absolute';
-  canvas.style.pointerEvents = 'none';
+  const dots = document.createElement('canvas');
+  const cong = document.createElement('canvas');
+  const arrow = document.createElement('canvas');
+  for (const [c, z] of [
+    [dots, '1000'],
+    [cong, '1001'],
+    [arrow, '1002'],
+  ] as const) {
+    c.style.position = 'absolute';
+    c.style.pointerEvents = 'none';
+    c.style.zIndex = z;
+  }
   overlay.onAdd = () => {
-    overlay.getPanes().overlayLayer.appendChild(canvas);
+    const pane = overlay.getPanes().floatPane;
+    pane.appendChild(dots);
+    pane.appendChild(cong);
+    pane.appendChild(arrow);
   };
   overlay.draw = () => {
     const projection = overlay.getProjection();
-    if (projection) draw(canvas, projection);
+    if (projection) draw(dots, cong, arrow, projection);
   };
   overlay.onRemove = () => {
-    canvas.remove();
+    dots.remove();
+    cong.remove();
+    arrow.remove();
   };
   overlay.setMap(map);
   return overlay;
@@ -334,7 +364,6 @@ export default function SimPage() {
   const mapRef2 = useRef<any>(null);
   const overlayRef = useRef<any>(null);
   const routeLineRef = useRef<any>(null);
-  const congestionRef = useRef<any[]>([]);
   const markersRef = useRef<any[]>([]);
   const tripRef = useRef<{ routes: DriveRoute[]; originLabel: string; destLabel: string } | null>(null);
   const destReqRef = useRef<TripPlan['destReq'] | null>(null);
@@ -636,8 +665,8 @@ export default function SimPage() {
         const bounds = new google.maps.LatLngBounds();
         for (const p of trip.routes[0].geom.points) bounds.extend(p);
         map.fitBounds(bounds);
-        overlay = createCarsOverlay(google, map, (canvas, projection) => {
-          drawScene(canvas, projection);
+        overlay = createCarsOverlay(google, map, (dots, cong, arrow, projection) => {
+          drawScene(dots, cong, arrow, projection);
         });
         overlayRef.current = overlay;
         clickListener = map.addListener('click', (e: any) => {
@@ -672,9 +701,7 @@ export default function SimPage() {
       if (overlay) overlay.setMap(null);
       if (routeLineRef.current) routeLineRef.current.setMap(null);
       for (const m of markersRef.current) m.setMap(null);
-      for (const c of congestionRef.current) c.setMap(null);
       markersRef.current = [];
-      congestionRef.current = [];
       routeLineRef.current = null;
       mapRef2.current = null;
       overlayRef.current = null;
@@ -712,7 +739,12 @@ export default function SimPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tripId]);
 
-  const drawScene = (canvas: HTMLCanvasElement, projection: any) => {
+  const drawScene = (
+    dots: HTMLCanvasElement,
+    cong: HTMLCanvasElement,
+    arrow: HTMLCanvasElement,
+    projection: any,
+  ) => {
     const traffic = trafficGeomRef.current;
     const yours = yourGeom();
     const container = mapRef.current;
@@ -722,28 +754,66 @@ export default function SimPage() {
     const h = container.clientHeight;
     if (w === 0 || h === 0) return;
     const dpr = Math.min(2, window.devicePixelRatio || 1);
-    if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
-      canvas.width = Math.round(w * dpr);
-      canvas.height = Math.round(h * dpr);
-      canvas.style.width = `${w}px`;
-      canvas.style.height = `${h}px`;
+    // Align the canvases to the map div: the pane origin sits off-corner, so
+    // measure it instead of assuming top:0/left:0.
+    const pane = dots.parentElement;
+    const dx = pane ? container.getBoundingClientRect().left - pane.getBoundingClientRect().left : 0;
+    const dy = pane ? container.getBoundingClientRect().top - pane.getBoundingClientRect().top : 0;
+    for (const c of [dots, cong, arrow]) {
+      if (c.width !== Math.round(w * dpr) || c.height !== Math.round(h * dpr)) {
+        c.width = Math.round(w * dpr);
+        c.height = Math.round(h * dpr);
+        c.style.width = `${w}px`;
+        c.style.height = `${h}px`;
+      }
+      c.style.left = `${dx}px`;
+      c.style.top = `${dy}px`;
     }
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.clearRect(0, 0, w, h);
+    // Container pixels: verified against this Maps build, whose
+    // fromLatLngToDivPixel returns center-relative garbage.
     const toPx = (p: { lat: number; lng: number }) =>
-      projection.fromLatLngToDivPixel(new google.maps.LatLng(p.lat, p.lng));
-    // Background traffic: small gray dots under the route overlays.
-    ctx.fillStyle = '#9ca3af';
-    for (const car of carsRef.current) {
-      const px = toPx(pointAt(traffic, car.s));
-      if (!px) continue;
-      ctx.beginPath();
-      ctx.arc(px.x, px.y, 4, 0, Math.PI * 2);
-      ctx.fill();
+      projection.fromLatLngToContainerPixel(new google.maps.LatLng(p.lat, p.lng));
+    // Background traffic: small gray dots over the blue line, under congestion.
+    const dctx = dots.getContext('2d');
+    if (dctx) {
+      dctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      dctx.clearRect(0, 0, w, h);
+      dctx.fillStyle = '#9ca3af';
+      for (const car of carsRef.current) {
+        const px = toPx(pointAt(traffic, car.s));
+        if (!px) continue;
+        dctx.beginPath();
+        dctx.arc(px.x, px.y, 4, 0, Math.PI * 2);
+        dctx.fill();
+      }
+    }
+    // Congestion: slowed stretches only, over the dots.
+    const cctx = cong.getContext('2d');
+    if (cctx) {
+      cctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      cctx.clearRect(0, 0, w, h);
+      cctx.lineWidth = 7;
+      cctx.lineJoin = 'round';
+      cctx.lineCap = 'round';
+      for (const z of zonesRef.current) {
+        const mph = z.mps / MPH_TO_MPS;
+        if (mph > 35) continue;
+        cctx.strokeStyle = mph < 15 ? 'rgba(220,38,38,0.85)' : 'rgba(245,158,11,0.85)';
+        cctx.beginPath();
+        subPath(yours, Math.max(0, z.s0), z.s1).forEach((p, i) => {
+          const px = toPx(p);
+          if (!px) return;
+          if (i === 0) cctx.moveTo(px.x, px.y);
+          else cctx.lineTo(px.x, px.y);
+        });
+        cctx.stroke();
+      }
     }
     // Your car: blue arrow in the direction of travel, always on top.
+    const actx = arrow.getContext('2d');
+    if (!actx) return;
+    actx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    actx.clearRect(0, 0, w, h);
     const you = yourCarRef.current;
     const p0 = pointAt(yours, you.s);
     const p1 = pointAt(yours, Math.min(yours.length, you.s + 40));
@@ -751,28 +821,28 @@ export default function SimPage() {
     const b = toPx(p1);
     if (a && b) {
       const angle = Math.atan2(b.y - a.y, b.x - a.x) + Math.PI / 2;
-      ctx.save();
-      ctx.translate(a.x, a.y);
-      ctx.rotate(angle);
-      ctx.beginPath();
-      ctx.moveTo(0, -11);
-      ctx.lineTo(7, 8);
-      ctx.lineTo(0, 4);
-      ctx.lineTo(-7, 8);
-      ctx.closePath();
-      ctx.fillStyle = ROUTE_BLUE;
-      ctx.fill();
-      ctx.lineWidth = 2;
-      ctx.strokeStyle = '#ffffff';
-      ctx.stroke();
-      ctx.restore();
-      ctx.font = 'bold 11px system-ui, sans-serif';
+      actx.save();
+      actx.translate(a.x, a.y);
+      actx.rotate(angle);
+      actx.beginPath();
+      actx.moveTo(0, -11);
+      actx.lineTo(7, 8);
+      actx.lineTo(0, 4);
+      actx.lineTo(-7, 8);
+      actx.closePath();
+      actx.fillStyle = ROUTE_BLUE;
+      actx.fill();
+      actx.lineWidth = 2;
+      actx.strokeStyle = '#ffffff';
+      actx.stroke();
+      actx.restore();
+      actx.font = 'bold 11px system-ui, sans-serif';
       const label = 'You';
-      const tw = ctx.measureText(label).width;
-      ctx.fillStyle = 'rgba(0,0,0,0.75)';
-      ctx.fillRect(a.x + 12, a.y - 20, tw + 8, 17);
-      ctx.fillStyle = '#ffffff';
-      ctx.fillText(label, a.x + 16, a.y - 7);
+      const tw = actx.measureText(label).width;
+      actx.fillStyle = 'rgba(0,0,0,0.75)';
+      actx.fillRect(a.x + 12, a.y - 20, tw + 8, 17);
+      actx.fillStyle = '#ffffff';
+      actx.fillText(label, a.x + 16, a.y - 7);
     }
   };
 
@@ -784,6 +854,29 @@ export default function SimPage() {
         if (mph === null) return [];
         return [{ s0: i.s - SLOW_AHEAD_METERS, s1: i.s, mps: mph * MPH_TO_MPS }];
       });
+
+  // ETA basis shared with the option cards: Routes duration prorated by
+  // distance, plus the live sim slowdown over the same stretch.
+  const legSec = (fromS: number, toS: number, zones: SlowZone[]): number => {
+    const g = yourGeom();
+    const dur = tripRef.current?.routes[currentIdxRef.current]?.data.durationSeconds ?? 0;
+    if (g && dur > 0) {
+      const routesLeg = routesRemainSec(dur, g.length, fromS) - routesRemainSec(dur, g.length, toS);
+      const extra = Math.max(
+        0,
+        projectToS(fromS, toS, zones, YOUR_BASE_MPS) - projectToS(fromS, toS, [], YOUR_BASE_MPS),
+      );
+      return Math.max(0, routesLeg) + extra;
+    }
+    return projectToS(fromS, toS, zones, YOUR_BASE_MPS);
+  };
+
+  const freeLegSec = (fromS: number): number => {
+    const g = yourGeom();
+    const dur = tripRef.current?.routes[currentIdxRef.current]?.data.durationSeconds ?? 0;
+    if (g && dur > 0) return routesRemainSec(dur, g.length, fromS);
+    return g ? (g.length - fromS) / YOUR_BASE_MPS : 0;
+  };
 
   // Sim loop: advance traffic on the sim clock, redraw the car canvas.
   useEffect(() => {
@@ -846,21 +939,22 @@ export default function SimPage() {
       uiAcc += dtReal;
       if (uiAcc >= 0.25) {
         uiAcc = 0;
+        zonesRef.current = zonesForRoute(currentIdxRef.current);
         const you = yourCarRef.current;
         const g = yourGeom();
         if (g) {
           const proj = projectEta(you.s, zonesRef.current, YOUR_BASE_MPS, g.length);
-          let etaS = proj.seconds;
+          let etaS = legSec(you.s, g.length, zonesRef.current);
           const stop = stopPlanRef.current;
           if (stop && !you.arrived) {
             if (you.s >= stop.s) {
-              etaS = Math.max(0, stop.resumeAt - simTimeRef.current) + (g.length - you.s) / YOUR_BASE_MPS;
+              etaS = Math.max(0, stop.resumeAt - simTimeRef.current) + freeLegSec(you.s);
             } else {
-              const driveT = projectToS(you.s, stop.s, zonesRef.current, YOUR_BASE_MPS);
+              const driveT = legSec(you.s, stop.s, zonesRef.current);
               etaS =
                 driveT +
                 Math.max(0, stop.resumeAt - (simTimeRef.current + driveT)) +
-                (g.length - stop.s) / YOUR_BASE_MPS;
+                freeLegSec(stop.s);
             }
           }
           setHud({
@@ -906,32 +1000,6 @@ export default function SimPage() {
     });
   }, [incidents, selectedId, warningId, mapStatus]);
 
-  // Congestion overlay: slowed stretches only, over the gray car dots.
-  useEffect(() => {
-    const google = googleRef.current;
-    const map = mapRef2.current;
-    const trip = tripRef.current;
-    if (!google || !map || !trip || mapStatus !== 'ready') return;
-    for (const c of congestionRef.current) c.setMap(null);
-    congestionRef.current = [];
-    const g = trip.routes[currentIdx]?.geom;
-    if (!g) return;
-    for (const i of incidents) {
-      if (!i.active || i.routeIdx !== currentIdx) continue;
-      const mph = stageSpeedMps(i.stage);
-      if (mph === null || mph > 35) continue;
-      const line = new google.maps.Polyline({
-        path: subPath(g, Math.max(0, i.s - SLOW_AHEAD_METERS), i.s),
-        strokeColor: mph < 15 ? '#dc2626' : '#f59e0b',
-        strokeWeight: 7,
-        strokeOpacity: 0.85,
-        zIndex: 2,
-        map,
-      });
-      congestionRef.current.push(line);
-    }
-  }, [incidents, currentIdx, tripId, mapStatus]);
-
   const closestCarId = (lat: number, lng: number): number => {
     const traffic = trafficGeomRef.current;
     let best = 0;
@@ -971,6 +1039,7 @@ export default function SimPage() {
       ],
       stage: verdict.stage,
       severity: verdict.severity,
+      lanesBlocked: verdict.lanesBlocked ?? 'unknown',
       active: true,
       thumbnail:
         first !== undefined
@@ -998,6 +1067,7 @@ export default function SimPage() {
       ],
       stage,
       severity: verdict.severity,
+      lanesBlocked: verdict.lanesBlocked ?? 'unknown',
       active: !cleared,
       summary: verdict.summary,
       type: verdict.type,
@@ -1092,33 +1162,85 @@ export default function SimPage() {
     const simNow = simTimeRef.current;
     const base = YOUR_BASE_MPS;
     const L = geom.length;
-    const zones = zonesForRoute(currentIdxRef.current);
-    const clear = clearanceEstimate(incident.type, incident.stage, incident.severity);
-    const freeS = projectEta(youS, [], base, L).seconds;
-    const stayS =
-      incident.type === 'construction'
-        ? projectEta(youS, zones, base, L).seconds
-        : projectEtaWithRecovery(youS, zones, base, L, (clear.midpointMin ?? 30) * 60);
-    const jamDelayMin = Math.max(0, (stayS - freeS) / 60);
-    const stayArrival = formatEta(simNow, stayS);
-    let fastest: 'stay' | 'reroute' | 'stop' = 'stay';
-    let bestS = stayS;
     const curIdx = currentIdxRef.current;
+    const curData = trip.routes[curIdx].data;
+    const mainName = routeName(curData.description, curData.steps);
+    const mainDur = curData.durationSeconds;
+    const mainRemainSec =
+      mainDur > 0 ? routesRemainSec(mainDur, L, youS) : projectEta(youS, [], base, L).seconds;
+    const zones = zonesForRoute(curIdx);
+    const clear = clearanceEstimate(incident.type, incident.stage, incident.severity);
+    const lanes = incident.lanesBlocked ?? 'unknown';
+    const ageMin = Math.max(0, (simNow - incident.reports[0].t) / 60);
+    const tMin =
+      (mainDur > 0
+        ? (mainDur * Math.max(0, incident.s - youS)) / L
+        : projectToS(youS, incident.s, zones, base)) / 60;
+
+    // STAY: clearance-based wait, shown as a range with the midpoint headline.
+    let stayMidSec: number;
+    let stayArrival: string;
+    let stayLoClock: string;
+    let stayHiClock: string;
+    let jamDelayMin: number;
+    let jamLoMin: number;
+    let jamHiMin: number;
+    if (
+      incident.type === 'construction' ||
+      clear.loMin === null ||
+      clear.midpointMin === null ||
+      clear.hiMin === null
+    ) {
+      const freeS = projectEta(youS, [], base, L).seconds;
+      stayMidSec = projectEta(youS, zones, base, L).seconds;
+      jamDelayMin = Math.max(0, (stayMidSec - freeS) / 60);
+      jamLoMin = jamDelayMin;
+      jamHiMin = jamDelayMin;
+      stayArrival = formatEta(simNow, stayMidSec);
+      stayLoClock = stayArrival;
+      stayHiClock = stayArrival;
+    } else {
+      const range = stayDelayRange(tMin, clear.loMin, clear.midpointMin, clear.hiMin, lanes, ageMin);
+      jamDelayMin = range.mid;
+      jamLoMin = range.lo;
+      jamHiMin = range.hi;
+      stayMidSec = mainRemainSec + range.mid * 60;
+      stayArrival = formatEta(simNow, stayMidSec);
+      stayLoClock = formatEta(simNow, mainRemainSec + range.lo * 60);
+      stayHiClock = formatEta(simNow, mainRemainSec + range.hi * 60);
+    }
+    let fastest: 'stay' | 'reroute' | 'stop' = 'stay';
+    let bestS = stayMidSec;
     const incidentPt = { lat: incident.lat, lng: incident.lng };
 
-    // REROUTE: fastest stored alternative that avoids the incident, else a
-    // fresh waypoint route from the current position.
+    // REROUTE: fastest alternative that avoids the incident, else a fresh
+    // waypoint route from the current position. Costed on Routes durations.
+    const rerouteCost = (
+      altData: TripRouteData,
+      altLen: number,
+      divergeS: number,
+      altS: number,
+    ): { toDivergeSec: number; altRemainSec: number; totalSec: number } => {
+      if (mainDur > 0 && altData.durationSeconds > 0) {
+        const toDivergeSec = (mainDur * Math.max(0, divergeS - youS)) / L;
+        const altRemainSec = routesRemainSec(altData.durationSeconds, altLen, altS);
+        return { toDivergeSec, altRemainSec, totalSec: toDivergeSec + altRemainSec };
+      }
+      const toDivergeSec = projectToS(youS, divergeS, zones, base);
+      const altRemainSec = (altLen - altS) / base;
+      return { toDivergeSec, altRemainSec, totalSec: toDivergeSec + altRemainSec };
+    };
     let reroute: RerouteOption = { available: false, reason: 'No avoiding route found.' };
-    let bestAlt: { altIdx: number; divergeS: number; altS: number; arrivalS: number } | null = null;
+    let bestAlt: { altIdx: number; divergeS: number; altS: number; totalSec: number } | null = null;
     for (let idx = 0; idx < trip.routes.length; idx++) {
       if (idx === curIdx) continue;
       const alt = trip.routes[idx];
       if (minDistanceToRoute(alt.geom, incidentPt) <= WARN_LATERAL_METERS) continue;
       const div = findDivergence(geom, alt.geom.points, incident.s, 50);
       if (!div || div.s <= youS) continue;
-      const arrivalS = projectToS(youS, div.s, zones, base) + (alt.geom.length - div.altS) / base;
-      if (!bestAlt || arrivalS < bestAlt.arrivalS) {
-        bestAlt = { altIdx: idx, divergeS: div.s, altS: div.altS, arrivalS };
+      const cost = rerouteCost(alt.data, alt.geom.length, div.s, div.altS);
+      if (!bestAlt || cost.totalSec < bestAlt.totalSec) {
+        bestAlt = { altIdx: idx, divergeS: div.s, altS: div.altS, totalSec: cost.totalSec };
       }
     }
     if (!bestAlt) {
@@ -1134,8 +1256,13 @@ export default function SimPage() {
             trip.routes.push({ data, geom: g });
             const div = findDivergence(geom, g.points, incident.s, 50);
             if (!div || div.s <= youS) continue;
-            const arrivalS = projectToS(youS, div.s, zones, base) + (g.length - div.altS) / base;
-            bestAlt = { altIdx: trip.routes.length - 1, divergeS: div.s, altS: div.altS, arrivalS };
+            const cost = rerouteCost(data, g.length, div.s, div.altS);
+            bestAlt = {
+              altIdx: trip.routes.length - 1,
+              divergeS: div.s,
+              altS: div.altS,
+              totalSec: cost.totalSec,
+            };
             break;
           } catch {
             // Try the other side.
@@ -1144,35 +1271,38 @@ export default function SimPage() {
       }
     }
     if (bestAlt) {
-      const altSteps = trip.routes[bestAlt.altIdx].data.steps;
-      const afterTexts: string[] = [];
-      let cum = 0;
-      for (const st of altSteps) {
-        cum += st.distanceMeters;
-        if (cum > bestAlt.altS && st.instruction) afterTexts.push(st.instruction);
-      }
-      const decideLabel = decideLabelFor(trip.routes[curIdx].data.steps, bestAlt.divergeS, youS);
-      const decideMin = projectToS(youS, bestAlt.divergeS, zones, base) / 60;
+      const altData = trip.routes[bestAlt.altIdx].data;
+      const altGeom = trip.routes[bestAlt.altIdx].geom;
+      const cost = rerouteCost(altData, altGeom.length, bestAlt.divergeS, bestAlt.altS);
+      const decideLabel =
+        decideByLabel(altData.steps, bestAlt.altS) ??
+        `in ${fmtMi(Math.max(0, bestAlt.divergeS - youS))}`;
       reroute = {
         available: true,
-        arrivalClock: formatEta(simNow, bestAlt.arrivalS),
-        diffMin: (stayS - bestAlt.arrivalS) / 60,
+        arrivalClock: formatEta(simNow, cost.totalSec),
+        diffMin: rerouteDelayMin(cost.toDivergeSec, cost.altRemainSec, mainRemainSec),
         altIdx: bestAlt.altIdx,
         divergeS: bestAlt.divergeS,
         altS: bestAlt.altS,
-        viaName: altRoadName(afterTexts),
+        viaName: routeName(altData.description, altData.steps),
         decideLabel,
-        decideMin,
+        decideMin: cost.toDivergeSec / 60,
       };
-      if (bestAlt.arrivalS < bestS) {
-        bestS = bestAlt.arrivalS;
+      if (cost.totalSec < bestS) {
+        bestS = cost.totalSec;
         fastest = 'reroute';
       }
     }
 
     // STOP: nearest gas/rest/coffee between you and the decision point.
+    // Hidden once the incident clears before you arrive: nothing to wait out.
     let stop: StopOption | null = null;
-    if (incident.type !== 'construction' && clear.midpointMin !== null) {
+    if (
+      incident.type !== 'construction' &&
+      clear.midpointMin !== null &&
+      clear.hiMin !== null &&
+      tMin < clear.hiMin
+    ) {
       const farBound =
         reroute.available && reroute.divergeS !== undefined ? reroute.divergeS : incident.s;
       if (farBound > youS + 50) {
@@ -1192,23 +1322,20 @@ export default function SimPage() {
             }
             if (pick) {
               const driveT = projectToS(youS, pick.s, zones, base);
-              const M = clear.midpointMin * 60;
-              if (M > driveT + 60) {
-                const waitMin = (M - driveT) / 60;
-                const resumeAt = simNow + M;
-                const arrivalS = M + (L - pick.s) / base;
-                stop = {
-                  name: pick.name,
-                  waitMin,
-                  arrivalClock: formatEta(simNow, arrivalS),
-                  stopS: pick.s,
-                  resumeAt,
-                  arrivalS,
-                };
-                if (arrivalS < bestS) {
-                  bestS = arrivalS;
-                  fastest = 'stop';
-                }
+              const waitMin = Math.max(5, clear.midpointMin - tMin);
+              const resumeAt = simNow + driveT + waitMin * 60;
+              const arrivalS = mainRemainSec + waitMin * 60 + WAIT_RESIDUAL_MIN * 60;
+              stop = {
+                name: pick.name,
+                waitMin,
+                arrivalClock: formatEta(simNow, arrivalS),
+                stopS: pick.s,
+                resumeAt,
+                arrivalS,
+              };
+              if (arrivalS < bestS) {
+                bestS = arrivalS;
+                fastest = 'stop';
               }
             }
           }
@@ -1219,27 +1346,29 @@ export default function SimPage() {
     }
 
     if (token !== optionsTokenRef.current) return;
-    setOptions({ stayArrival, jamDelayMin, reroute, stop, fastest });
-  };
-
-  const decideLabelFor = (steps: TripStep[], divergeS: number, youS: number): string => {
-    let cum = 0;
-    for (const st of steps) {
-      const start = cum;
-      cum += st.distanceMeters;
-      if (divergeS >= start && divergeS < cum && st.instruction) {
-        const t = stripTags(st.instruction);
-        return t.length > 90 ? `${t.slice(0, 87)}…` : t;
-      }
-    }
-    return `in ${fmtMi(Math.max(0, divergeS - youS))}`;
+    setOptions({
+      stayArrival,
+      stayLoClock,
+      stayHiClock,
+      jamDelayMin,
+      jamLoMin,
+      jamHiMin,
+      mainName,
+      reroute,
+      stop,
+      fastest,
+    });
   };
 
   const chooseStay = () => {
     if (warningIdRef.current === null) return;
     pendingSwitchRef.current = null;
     stopPlanRef.current = null;
-    setChoice({ kind: 'stay', label: 'Stay on route', incidentId: warningIdRef.current });
+    setChoice({
+      kind: 'stay',
+      label: `Stay on ${options?.mainName ?? 'route'}`,
+      incidentId: warningIdRef.current,
+    });
   };
 
   const chooseReroute = () => {
@@ -1257,7 +1386,7 @@ export default function SimPage() {
     stopPlanRef.current = null;
     setChoice({
       kind: 'reroute',
-      label: `Reroute via ${o.viaName ?? 'alt route'}`,
+      label: `Reroute via ${o.viaName}`,
       incidentId: warningIdRef.current,
     });
     showToast(`Rerouting at ${o.decideLabel ?? 'the divergence point'}.`);
@@ -1706,7 +1835,12 @@ export default function SimPage() {
               {warnDist} ahead · about {warnTime} away
             </p>
             <p className="text-sm">Clears in: {warnClear}</p>
-            {options && <p className="text-sm">Jam delay if you stay: {fmtMin(options.jamDelayMin * 60)}</p>}
+            {options && (
+              <p className="text-sm">
+                Jam delay if you stay: {fmtMin(options.jamDelayMin * 60)} (
+                {fmtMin(options.jamLoMin * 60)}–{fmtMin(options.jamHiMin * 60)})
+              </p>
+            )}
             {rOpt?.available && rOpt.decideLabel && (
               <p className="text-sm font-semibold">
                 Decide by {rOpt.decideLabel} ({fmtMin((rOpt.decideMin ?? 0) * 60)})
@@ -1721,11 +1855,11 @@ export default function SimPage() {
                   className={`min-h-[44px] rounded-md border p-2 text-left text-sm ${options.fastest === 'stay' ? 'border-green-600 bg-green-50' : 'border-stone-300'}`}
                 >
                   <span className="font-bold">
-                    STAY {options.fastest === 'stay' && <span className="text-green-700">· Fastest</span>}
+                    STAY on {options.mainName}{' '}
+                    {options.fastest === 'stay' && <span className="text-green-700">· Fastest</span>}
                   </span>
                   <br />
-                  Arrive {options.stayArrival}
-                  {options.jamDelayMin > 0.5 && ` (+${Math.round(options.jamDelayMin)} min jam)`}
+                  Arrive {options.stayArrival} ({options.stayLoClock}–{options.stayHiClock})
                 </button>
                 {rOpt?.available ? (
                   <button
@@ -1734,15 +1868,15 @@ export default function SimPage() {
                     className={`min-h-[44px] rounded-md border p-2 text-left text-sm ${options.fastest === 'reroute' ? 'border-green-600 bg-green-50' : 'border-stone-300'}`}
                   >
                     <span className="font-bold">
-                      REROUTE via {rOpt.viaName ?? 'alt route'}{' '}
+                      REROUTE via {rOpt.viaName}{' '}
                       {options.fastest === 'reroute' && <span className="text-green-700">· Fastest</span>}
                     </span>
                     <br />
                     Arrive {rOpt.arrivalClock}
                     {rOpt.diffMin !== undefined &&
-                      (rOpt.diffMin >= 0
-                        ? ` (${Math.round(rOpt.diffMin)} min faster)`
-                        : ` (${Math.round(-rOpt.diffMin)} min slower)`)}
+                      (rOpt.diffMin > 0.5
+                        ? ` (+${Math.round(rOpt.diffMin)} min detour)`
+                        : ' (no detour)')}
                   </button>
                 ) : (
                   <p className="rounded-md bg-stone-100 p-2 text-sm">

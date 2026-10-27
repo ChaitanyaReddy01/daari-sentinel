@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "prep-clip": "tsx scripts/prep-clip.ts"
+    "prep-clip": "tsx scripts/prep-clip.ts",
+    "test:jam": "tsx scripts/test-jam-model.ts"
   },
   "dependencies": {
     "@meta-sam/parser": "^0.1.0",

@@ -21,6 +21,10 @@ built during the hackathon window.
 | Oct 27 | I-95 live simulation with real AI incident reports (Day 3) |
 | Oct 27 | driver experience — trip planning, advance warnings, stay/reroute/stop options (Day 3) |
 
+Commit messages before this point say 'Day 1–3'; these were build steps, all completed on Oct 27, the first building day.
+
+| Oct 27 | Step 4b: realistic jam delay, exit-based decide-by, named reroutes |
+
 ## Meta models used
 
 - SAM 3.1 (`sam-3.1`) — open-vocabulary video segmentation and tracking. One

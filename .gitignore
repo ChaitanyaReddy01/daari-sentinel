@@ -47,3 +47,6 @@ public/clips/prepped/synth-*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# throwaway verification screenshots
+.verify-shots/

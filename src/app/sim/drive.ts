@@ -159,15 +159,6 @@ export function offRouteCandidates(
   return minDistanceToRoute(geom, a) >= minDistanceToRoute(geom, b) ? [a, b] : [b, a];
 }
 
-/** Highway-style road token from nav instructions, e.g. "US-1". */
-export function altRoadName(instructions: string[]): string | null {
-  for (const text of instructions) {
-    const m = /\b(I-\d+|US-\d+|Route \d+)\b/.exec(text);
-    if (m) return m[1];
-  }
-  return null;
-}
-
 export function mph(mps: number): number {
   return mps / MPH_TO_MPS;
 }
@@ -182,7 +173,7 @@ export function beep(): void {
     const AC = w.AudioContext ?? w.webkitAudioContext;
     if (!AC) return;
     const ctx = new AC();
-    if (ctx.state === 'suspended') void ctx.resume();
+    if (ctx.state === 'suspended') void ctx.resume().catch(() => {});
     [660, 880].forEach((freq, i) => {
       const osc = ctx.createOscillator();
       const gain = ctx.createGain();
@@ -197,10 +188,15 @@ export function beep(): void {
       osc.start(t0);
       osc.stop(t0 + 0.18);
     });
-    setTimeout(() => void ctx.close(), 700);
+    setTimeout(() => void ctx.close().catch(() => {}), 700);
   } catch {
     // Audio unavailable: stay silent.
   }
+}
+
+/** Strip HTML tags from a navigation instruction. */
+export function stripTags(s: string): string {
+  return s.replace(/<[^>]*>/g, '').trim();
 }
 
 /** Speak one short alert. Silent when speech is unavailable. */
@@ -214,4 +210,150 @@ export function speak(text: string): void {
   } catch {
     // Speech unavailable: stay silent.
   }
+}
+
+/* ---- P4b: realistic jam-delay model (minutes) ---- */
+
+/** How much of the remaining closure you sit through, by lanes blocked. */
+export function blockageFactor(lanes: string): number {
+  switch (lanes) {
+    case 'all':
+      return 1.0;
+    case 'two':
+      return 0.8;
+    case 'one':
+      return 0.5;
+    case 'shoulder':
+      return 0.2;
+    case 'none':
+      return 0;
+    default:
+      return 0.6; // unknown
+  }
+}
+
+/** Leftover queue once the road reopens: 2-5 min by incident age. */
+export function residualQueueMin(ageMin: number): number {
+  return Math.min(5, 2 + Math.max(0, ageMin) / 20);
+}
+
+/** Fixed queue added to a wait-at-the-incident delay (minutes). */
+export const WAIT_RESIDUAL_MIN = 3;
+
+/**
+ * STAY delay for one clearance end: the wait at the incident, scaled by
+ * blockage, plus a residual queue. Past clearance, residual only.
+ */
+export function stayDelayMin(
+  tMin: number,
+  cMin: number,
+  cHigh: number,
+  lanes: string,
+  ageMin: number,
+): number {
+  if (tMin >= cHigh) return residualQueueMin(ageMin);
+  return Math.max(0, cMin - tMin) * blockageFactor(lanes) + WAIT_RESIDUAL_MIN;
+}
+
+export interface StayDelayRange {
+  lo: number;
+  mid: number;
+  hi: number;
+}
+
+/** STAY delay range from the clearance ends, midpoint as headline. */
+export function stayDelayRange(
+  tMin: number,
+  cLo: number,
+  cMid: number,
+  cHigh: number,
+  lanes: string,
+  ageMin: number,
+): StayDelayRange {
+  return {
+    lo: stayDelayMin(tMin, cLo, cHigh, lanes, ageMin),
+    mid: stayDelayMin(tMin, cMid, cHigh, lanes, ageMin),
+    hi: stayDelayMin(tMin, cHigh, cHigh, lanes, ageMin),
+  };
+}
+
+/** REROUTE extra minutes vs the main route. Never negative. */
+export function rerouteDelayMin(
+  toDivergeSec: number,
+  altRemainSec: number,
+  mainRemainSec: number,
+): number {
+  return Math.max(0, (toDivergeSec + altRemainSec - mainRemainSec) / 60);
+}
+
+/** Remaining seconds from a Routes total duration, prorated by distance. */
+export function routesRemainSec(totalDurationSec: number, totalLengthM: number, s: number): number {
+  if (totalLengthM <= 0 || totalDurationSec <= 0) return 0;
+  const frac = Math.min(1, Math.max(0, s / totalLengthM));
+  return Math.max(0, totalDurationSec * (1 - frac));
+}
+
+/* ---- P4b: exit-based decide-by and route names ---- */
+
+export interface StepLike {
+  distanceMeters: number;
+  instruction: string | null;
+}
+
+const ROAD_RE =
+  /\b([A-Z]{2}-\d+[A-Z]?|I-\d+|US-\d+|Route \d+|[A-Z][\w.'-]* (?:Pkwy|Parkway|Tpke|Turnpike|Expwy|Expressway|Hwy))\b/;
+
+/** "Take exit 26 toward US-1" -> "Exit 26 (US-1)". Null when nothing found. */
+export function parseDecideByLabel(instruction: string): string | null {
+  const text = stripTags(instruction);
+  const exit = /\bexit\s+(\d+[A-Z]?)/i.exec(text)?.[1] ?? null;
+  const road = ROAD_RE.exec(text)?.[1] ?? null;
+  if (exit && road) return `Exit ${exit} (${road})`;
+  if (exit) return `Exit ${exit}`;
+  return road;
+}
+
+/**
+ * Decide-by label from the alternative route: scan forward from the step
+ * containing the divergence point for the first exit/road instruction.
+ */
+export function decideByLabel(steps: StepLike[], altS: number): string | null {
+  let cum = 0;
+  let started = false;
+  for (const st of steps) {
+    const start = cum;
+    cum += st.distanceMeters;
+    if (!started && altS >= start && altS < cum) started = true;
+    if (!started && start >= altS - 1) started = true;
+    if (!started || !st.instruction) continue;
+    const label = parseDecideByLabel(st.instruction);
+    if (label) return label;
+  }
+  return null;
+}
+
+/** Road token carrying the most step distance, e.g. "I-95". */
+export function longestRoad(steps: StepLike[]): string | null {
+  const totals = new Map<string, number>();
+  for (const st of steps) {
+    if (!st.instruction) continue;
+    const m = ROAD_RE.exec(stripTags(st.instruction));
+    if (!m) continue;
+    totals.set(m[1], (totals.get(m[1]) ?? 0) + st.distanceMeters);
+  }
+  let best: string | null = null;
+  let bestM = 0;
+  totals.forEach((m, road) => {
+    if (m > bestM) {
+      bestM = m;
+      best = road;
+    }
+  });
+  return best;
+}
+
+/** Display name: Routes description, else the longest road. */
+export function routeName(description: string | null | undefined, steps: StepLike[]): string {
+  if (description && description.trim()) return description.trim();
+  return longestRoad(steps) ?? 'this route';
 }
