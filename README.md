@@ -16,12 +16,16 @@ built during the hackathon window.
 | Oct 27 | Project setup and SAM 3.1 perception lab    |
 | Oct 27 | Verified: build, prep, cached analyze, overlay boxes, 390px layout (live SAM call pending a real API key) |
 | Oct 27 | first live SAM 3.1 runs on real footage; concept list moved to plain objects, Muse Spark will judge incidents |
+| Oct 27 | Muse Spark scene verdict with evidence cross-check (Day 2) |
 
 ## Meta models used
 
 - SAM 3.1 (`sam-3.1`) — open-vocabulary video segmentation and tracking. One
   short noun phrase per request (e.g. `crashed car`); tracked boxes are drawn
   over the playing clip in the Perception Lab.
+- Muse Spark 1.3 (`muse-spark-1.3-contributor`) — watches the clip and returns
+  a structured scene verdict (incident type, severity, responders, evidence
+  timestamps), cross-checked against the SAM detections on the same clip.
 
 ## How to run
 

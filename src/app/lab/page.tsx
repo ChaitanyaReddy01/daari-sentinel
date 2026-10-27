@@ -38,6 +38,33 @@ interface SamResult {
   fps: number;
 }
 
+interface Verdict {
+  incident: boolean;
+  type: string;
+  severity: string | null;
+  vehiclesInvolved: number | null;
+  lanesBlocked: string;
+  responders: { police: boolean; ambulance: boolean; fire: boolean; towTruck: boolean };
+  stage: string;
+  hazards: string[];
+  evidence: { second: number; what: string }[];
+  confidence: number;
+  summary: string;
+}
+
+interface VerdictCheck {
+  claim: string;
+  status: 'supported' | 'unverified' | 'conflict';
+  detail: string;
+}
+
+const RESPONDER_BADGES = [
+  { key: 'police', label: 'Police' },
+  { key: 'ambulance', label: 'Ambulance' },
+  { key: 'fire', label: 'Fire crew' },
+  { key: 'towTruck', label: 'Tow truck' },
+] as const;
+
 const PRICE_PER_1K_FRAMES = 0.2;
 const MIN_BILLABLE_FRAMES = 50;
 
@@ -51,6 +78,16 @@ function estimateFor(frameCount: number, uncachedConcepts: number): number {
 
 function fmtUSD(n: number): string {
   return `$${n.toFixed(2)}`;
+}
+
+function fmtPrecise(n: number): string {
+  if (n === 0) return '$0';
+  if (n < 0.01) return `$${n.toFixed(4)}`;
+  return fmtUSD(n);
+}
+
+function pretty(value: string): string {
+  return value.replace(/_/g, ' ');
 }
 
 async function readError(res: Response): Promise<string> {
@@ -81,6 +118,16 @@ export default function LabPage() {
   const [pending, setPending] = useState<{ uncached: string[]; estimate: number } | null>(null);
   const [analyzing, setAnalyzing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const [verdict, setVerdict] = useState<Verdict | null>(null);
+  const [checks, setChecks] = useState<VerdictCheck[]>([]);
+  const [verdictCached, setVerdictCached] = useState(false);
+  const [verdictCost, setVerdictCost] = useState<number | null>(null);
+  const [verdictStatus, setVerdictStatus] = useState<{
+    cached: boolean;
+    estimateUSD: number;
+  } | null>(null);
+  const [verdictLoading, setVerdictLoading] = useState(false);
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -198,7 +245,32 @@ export default function LabPage() {
     setPending(null);
     setLastRunCost(null);
     setError(null);
+    setVerdict(null);
+    setChecks([]);
+    setVerdictCached(false);
+    setVerdictCost(null);
+    setVerdictStatus(null);
   };
+
+  // Probe the verdict cache whenever the clip changes so the button can show
+  // the estimate (or "cached, $0") before anything is spent.
+  useEffect(() => {
+    if (!clip) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`/api/lab/verdict?clip=${encodeURIComponent(clip)}`);
+        if (!res.ok) return;
+        const data = (await res.json()) as { cached: boolean; estimateUSD: number };
+        if (!cancelled) setVerdictStatus(data);
+      } catch {
+        // Leave the button without an estimate; the POST will surface errors.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [clip]);
 
   const onAnalyzeClick = async () => {
     if (!clip || checked.length === 0 || estimating || analyzing) return;
@@ -261,6 +333,44 @@ export default function LabPage() {
     } finally {
       setAnalyzing(false);
     }
+  };
+
+  const onVerdictClick = async () => {
+    if (!clip || verdictLoading) return;
+    setError(null);
+    setVerdictLoading(true);
+    try {
+      const res = await fetch('/api/lab/verdict', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ clip }),
+      });
+      if (!res.ok) throw new Error(await readError(res));
+      const data = (await res.json()) as {
+        verdict: Verdict;
+        checks: VerdictCheck[];
+        cached: boolean;
+        estCostThisRun: number;
+        spentTotal: number;
+      };
+      setVerdict(data.verdict);
+      setChecks(data.checks);
+      setVerdictCached(data.cached);
+      setVerdictCost(data.estCostThisRun);
+      setSpent(data.spentTotal);
+      setVerdictStatus({ cached: true, estimateUSD: 0 });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Verdict failed');
+    } finally {
+      setVerdictLoading(false);
+    }
+  };
+
+  const onEvidenceClick = (second: number) => {
+    const video = videoRef.current;
+    if (!video) return;
+    video.currentTime = second;
+    video.pause();
   };
 
   return (
@@ -382,8 +492,9 @@ export default function LabPage() {
             </div>
           )}
 
+          <div className="grid gap-6 lg:grid-cols-2">
           {summaries && (
-            <section>
+            <section className="order-1 min-w-0">
               <h2 className="mb-2 text-lg font-semibold">Results</h2>
               <table className="w-full border-collapse text-xs sm:text-sm">
                 <thead>
@@ -435,7 +546,7 @@ export default function LabPage() {
             </section>
           )}
 
-          <section>
+          <section className="order-2 min-w-0 lg:order-3 lg:col-span-2">
             <h2 className="mb-2 text-lg font-semibold">
               Video
               {selectedResult ? (
@@ -456,6 +567,156 @@ export default function LabPage() {
               <canvas ref={canvasRef} className="pointer-events-none absolute inset-0 h-full w-full" />
             </div>
           </section>
+
+          <section className={`order-3 min-w-0 ${summaries ? 'lg:order-2' : 'lg:col-span-2'}`}>
+            <h2 className="mb-2 text-lg font-semibold">
+              Scene verdict
+              {verdictCached && (
+                <span className="ml-2 rounded bg-stone-200 px-1.5 py-0.5 align-middle text-[11px] font-normal text-stone-600">
+                  cached
+                </span>
+              )}
+            </h2>
+            <div className="space-y-3 rounded-lg border border-stone-200 p-4">
+              <div className="flex flex-wrap items-center gap-3">
+                <button
+                  type="button"
+                  onClick={onVerdictClick}
+                  disabled={!clip || verdictLoading}
+                  className="rounded-md bg-teal-700 px-4 py-2 text-sm font-medium text-white hover:bg-teal-800 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {verdictLoading ? 'Reading scene…' : 'Get verdict'}
+                </button>
+                <p className="text-sm text-stone-600 tabular-nums">
+                  {verdictStatus === null
+                    ? 'estimating…'
+                    : verdictStatus.cached
+                      ? 'cached, $0'
+                      : `≈${fmtPrecise(verdictStatus.estimateUSD)}`}
+                </p>
+                {verdictCost !== null && (
+                  <p className="text-sm text-stone-600 tabular-nums">
+                    Last verdict: {fmtPrecise(verdictCost)}
+                  </p>
+                )}
+              </div>
+              {!summaries && (
+                <p className="text-xs text-stone-500">
+                  Tip: run Analyze first so the verdict can be cross-checked against tracked
+                  objects.
+                </p>
+              )}
+              {verdict && (
+                <div className="space-y-3">
+                  <p className="text-lg font-medium leading-snug">{verdict.summary}</p>
+                  <div className="flex flex-wrap gap-2 text-xs">
+                    {[
+                      `type: ${pretty(verdict.type)}`,
+                      `severity: ${verdict.severity === null ? '—' : pretty(verdict.severity)}`,
+                      `stage: ${pretty(verdict.stage)}`,
+                      `lanes: ${pretty(verdict.lanesBlocked)}`,
+                      `vehicles: ${verdict.vehiclesInvolved === null ? '—' : verdict.vehiclesInvolved}`,
+                    ].map((chip) => (
+                      <span
+                        key={chip}
+                        className="rounded-full bg-stone-100 px-2.5 py-1 text-stone-700"
+                      >
+                        {chip}
+                      </span>
+                    ))}
+                  </div>
+                  <div className="flex flex-wrap gap-2 text-xs">
+                    {RESPONDER_BADGES.map(({ key, label }) => {
+                      const check = checks.find((c) => c.claim === `${label} on scene`);
+                      const claimed = verdict.responders[key];
+                      const ok = check?.status === 'supported';
+                      return (
+                        <span
+                          key={key}
+                          title={check?.detail ?? 'No cross-check yet.'}
+                          className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 ${
+                            claimed
+                              ? ok
+                                ? 'border-teal-700 bg-teal-50 text-teal-900'
+                                : 'border-amber-500 bg-amber-50 text-amber-900'
+                              : 'border-stone-200 bg-stone-50 text-stone-500'
+                          }`}
+                        >
+                          <span aria-hidden="true">
+                            {!check || ok ? '✓' : check.status === 'conflict' ? '✕' : '⚠'}
+                          </span>
+                          {label}
+                          {!claimed && <span className="opacity-75">· none</span>}
+                        </span>
+                      );
+                    })}
+                  </div>
+                  {checks.filter(
+                    (c) => !RESPONDER_BADGES.some((b) => c.claim === `${b.label} on scene`),
+                  ).length > 0 && (
+                    <ul className="space-y-1 text-xs text-stone-700">
+                      {checks
+                        .filter(
+                          (c) => !RESPONDER_BADGES.some((b) => c.claim === `${b.label} on scene`),
+                        )
+                        .map((c) => (
+                          <li key={c.claim} className="flex gap-2">
+                            <span
+                              aria-hidden="true"
+                              className={
+                                c.status === 'supported'
+                                  ? 'text-teal-700'
+                                  : c.status === 'conflict'
+                                    ? 'text-red-700'
+                                    : 'text-amber-600'
+                              }
+                            >
+                              {c.status === 'supported' ? '✓' : c.status === 'conflict' ? '✕' : '⚠'}
+                            </span>
+                            <span>
+                              <span className="font-medium">{c.claim}:</span> {c.detail}
+                            </span>
+                          </li>
+                        ))}
+                    </ul>
+                  )}
+                  {verdict.hazards.length > 0 && (
+                    <p className="text-xs text-stone-700">
+                      <span className="font-medium">Hazards:</span> {verdict.hazards.join('; ')}
+                    </p>
+                  )}
+                  {verdict.evidence.length > 0 && (
+                    <div>
+                      <h3 className="mb-1 text-sm font-medium">Evidence</h3>
+                      <ul className="space-y-2">
+                        {verdict.evidence.map((e) => (
+                          <li key={`${e.second}-${e.what}`}>
+                            <button
+                              type="button"
+                              onClick={() => onEvidenceClick(e.second)}
+                              className="block w-full rounded-md border border-stone-200 px-3 py-2 text-left text-sm hover:bg-stone-50"
+                            >
+                              <span className="font-semibold tabular-nums">
+                                {e.second.toFixed(0)}s
+                              </span>
+                              <span className="text-stone-600"> — {e.what}</span>
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                      <p className="mt-1 text-xs text-stone-500">
+                        Click an item to seek the video to that moment.
+                      </p>
+                    </div>
+                  )}
+                  <p className="text-xs tabular-nums text-stone-500">
+                    Model confidence: {verdict.confidence.toFixed(2)}
+                  </p>
+                </div>
+              )}
+            </div>
+          </section>
+          </div>
         </div>
       )}
     </main>
