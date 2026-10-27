@@ -18,6 +18,7 @@ built during the hackathon window.
 | Oct 27 | first live SAM 3.1 runs on real footage; concept list moved to plain objects, Muse Spark will judge incidents |
 | Oct 27 | Muse Spark scene verdict with evidence cross-check (Day 2) |
 | Oct 27 | footage set expanded to 19 clips with ground-truth labels and a first evaluation run |
+| Oct 27 | I-95 live simulation with real AI incident reports (Day 3) |
 
 ## Meta models used
 
