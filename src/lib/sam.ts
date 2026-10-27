@@ -10,14 +10,14 @@ import { readSamCache, samCachePath, slug } from './sam-cache';
 export { readSamCache, samCachePath, slug };
 
 export const CONCEPTS = [
-  'crashed car',
+  'car',
+  'truck',
   'police car',
-  'tow truck',
   'ambulance',
   'fire truck',
-  'standing water',
+  'tow truck',
+  'person',
   'traffic cone',
-  'road debris',
 ];
 
 export const SAM_MODEL = 'sam-3.1';
