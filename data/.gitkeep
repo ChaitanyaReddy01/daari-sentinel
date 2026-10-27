@@ -1,0 +1,2 @@
+Runtime data lives here (all git-ignored): data/cache/ (upload + SAM caches)
+and data/ledger.jsonl (per-call cost log).

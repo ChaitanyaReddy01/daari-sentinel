@@ -1,0 +1,2 @@
+Prepped clips (<name>.mp4 + <name>.json sidecar) land here via scripts/prep-clip.ts
+and are served at /clips/prepped/<name>.mp4.

@@ -1,0 +1,4 @@
+Drop raw dashcam clips (.mp4/.mov/.mkv/.webm) in this folder, then run:
+
+  npx tsx scripts/prep-clip.ts <your-clip.mp4>
+  npx tsx scripts/prep-clip.ts all
