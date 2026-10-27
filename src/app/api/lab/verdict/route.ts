@@ -1,3 +1,6 @@
+import fs from 'node:fs';
+import path from 'node:path';
+
 import { z } from 'zod';
 
 import {
@@ -30,6 +33,16 @@ const CHECK_CONCEPTS = [
   'person',
 ];
 
+/** True when any SAM result is cached for this clip hash. */
+function hasSamResults(hash: string): boolean {
+  try {
+    const dir = path.join(process.cwd(), 'data', 'cache', 'sam', hash);
+    return fs.readdirSync(dir).some((f) => f.endsWith('.json'));
+  } catch {
+    return false;
+  }
+}
+
 /** Key-free probe: is this clip's verdict cached, and what would it cost? */
 export async function GET(req: Request): Promise<Response> {
   const url = new URL(req.url);
@@ -58,6 +71,7 @@ export async function GET(req: Request): Promise<Response> {
   return Response.json({
     cached,
     estimateUSD: cached ? 0 : estimateVerdictCost(MUSE_SPARK_MODEL, clipInfo.frameCount),
+    hasSamResults: hasSamResults(hash),
   });
 }
 

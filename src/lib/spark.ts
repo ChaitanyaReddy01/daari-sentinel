@@ -154,7 +154,10 @@ export async function runVerdict({
   if (hit) return { result: hit, cached: true };
 
   const fileId = await uploadClip(videoPath);
-  const baseUserText = `${samHints(hash)}\n\nDescribe the scene using the schema.`;
+  const baseUserText =
+    `${samHints(hash)}\n\nDescribe the scene using the schema. ` +
+    'The summary must be one sentence of at most 25 words, written for a driver; ' +
+    'put the longer scene description in details (max 80 words).';
 
   let totalIn = 0;
   let totalOut = 0;

@@ -5,6 +5,10 @@ import { z } from 'zod';
  * Key-free: pure schema + validation, usable from routes and UI helpers.
  */
 
+function wordCount(s: string): number {
+  return s.trim().split(/\s+/).filter(Boolean).length;
+}
+
 export const VerdictSchema = z.object({
   incident: z.boolean(),
   type: z.enum([
@@ -44,13 +48,24 @@ export const VerdictSchema = z.object({
     )
     .max(5),
   confidence: z.number().min(0).max(1),
-  summary: z.string().min(1),
+  summary: z
+    .string()
+    .min(1)
+    .refine((s) => wordCount(s) <= 25, 'summary must be at most 25 words')
+    .refine(
+      (s) => (s.match(/[.!?]/g) ?? []).length <= 1,
+      'summary must be one sentence',
+    ),
+  details: z
+    .string()
+    .min(1)
+    .refine((s) => wordCount(s) <= 80, 'details must be at most 80 words'),
 });
 
 export type Verdict = z.infer<typeof VerdictSchema>;
 
 /** Bump to invalidate cached verdicts (prompt or schema changed). */
-export const PROMPT_VERSION = 1;
+export const PROMPT_VERSION = 2;
 
 export const VERDICT_SCHEMA_NAME = 'SceneVerdict';
 
@@ -119,7 +134,16 @@ export const VERDICT_JSON_SCHEMA: Record<string, unknown> = {
       },
     },
     confidence: { type: 'number', minimum: 0, maximum: 1 },
-    summary: { type: 'string', minLength: 1 },
+    summary: {
+      type: 'string',
+      minLength: 1,
+      description: 'One sentence, max 25 words, written for a driver.',
+    },
+    details: {
+      type: 'string',
+      minLength: 1,
+      description: 'Longer scene description, max 80 words.',
+    },
   },
   required: [
     'incident',
@@ -133,6 +157,7 @@ export const VERDICT_JSON_SCHEMA: Record<string, unknown> = {
     'evidence',
     'confidence',
     'summary',
+    'details',
   ],
   additionalProperties: false,
 };

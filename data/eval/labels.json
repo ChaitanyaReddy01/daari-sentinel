@@ -1,0 +1,154 @@
+[
+  {
+    "clip": "crash-1",
+    "incident": true,
+    "type": "crash",
+    "responders": { "police": false, "ambulance": false, "fire": false, "towTruck": false },
+    "notes": "",
+    "confirmed": false
+  },
+  {
+    "clip": "traffic-normal-1",
+    "incident": false,
+    "type": "none",
+    "responders": { "police": false, "ambulance": false, "fire": false, "towTruck": false },
+    "notes": "",
+    "confirmed": false
+  },
+  {
+    "clip": "traffic-cars-1",
+    "incident": false,
+    "type": "none",
+    "responders": { "police": false, "ambulance": false, "fire": false, "towTruck": false },
+    "notes": "",
+    "confirmed": false
+  },
+  {
+    "clip": "traffic-cars-2",
+    "incident": false,
+    "type": "none",
+    "responders": { "police": false, "ambulance": false, "fire": false, "towTruck": false },
+    "notes": "",
+    "confirmed": false
+  },
+  {
+    "clip": "traffic-cars-3",
+    "incident": false,
+    "type": "none",
+    "responders": { "police": false, "ambulance": false, "fire": false, "towTruck": false },
+    "notes": "",
+    "confirmed": false
+  },
+  {
+    "clip": "police-car-1",
+    "incident": true,
+    "type": "police_activity",
+    "responders": { "police": true, "ambulance": false, "fire": false, "towTruck": false },
+    "notes": "night traffic stop",
+    "confirmed": false
+  },
+  {
+    "clip": "cars-with-police-1",
+    "incident": true,
+    "type": "police_activity",
+    "responders": { "police": true, "ambulance": false, "fire": false, "towTruck": false },
+    "notes": "night highway, verify police visible",
+    "confirmed": false
+  },
+  {
+    "clip": "car-police-tow-1",
+    "incident": true,
+    "type": "crash",
+    "responders": { "police": true, "ambulance": false, "fire": false, "towTruck": true },
+    "notes": "",
+    "confirmed": false
+  },
+  {
+    "clip": "crowd-people-1",
+    "incident": false,
+    "type": "none",
+    "responders": { "police": false, "ambulance": false, "fire": false, "towTruck": false },
+    "notes": "many pedestrians, false-alarm test for person",
+    "confirmed": false
+  },
+  {
+    "clip": "car-tow-ambulance-police-1",
+    "incident": true,
+    "type": "crash",
+    "responders": { "police": true, "ambulance": true, "fire": false, "towTruck": true },
+    "notes": "",
+    "confirmed": false
+  },
+  {
+    "clip": "car-accident-1",
+    "incident": true,
+    "type": "crash",
+    "responders": { "police": false, "ambulance": false, "fire": false, "towTruck": false },
+    "notes": "check responders",
+    "confirmed": false
+  },
+  {
+    "clip": "dash-cam-car-1",
+    "incident": false,
+    "type": "none",
+    "responders": { "police": false, "ambulance": false, "fire": false, "towTruck": false },
+    "notes": "time-lapse",
+    "confirmed": false
+  },
+  {
+    "clip": "ambulance-fire-1",
+    "incident": true,
+    "type": "unknown",
+    "responders": { "police": true, "ambulance": true, "fire": true, "towTruck": false },
+    "notes": "night street",
+    "confirmed": false
+  },
+  {
+    "clip": "rd-construction-1",
+    "incident": true,
+    "type": "construction",
+    "responders": { "police": false, "ambulance": false, "fire": false, "towTruck": false },
+    "notes": "verify construction visible",
+    "confirmed": false
+  },
+  {
+    "clip": "policecars-1",
+    "incident": true,
+    "type": "police_activity",
+    "responders": { "police": true, "ambulance": false, "fire": false, "towTruck": false },
+    "notes": "suburban, not highway",
+    "confirmed": false
+  },
+  {
+    "clip": "policecars-2",
+    "incident": true,
+    "type": "police_activity",
+    "responders": { "police": true, "ambulance": false, "fire": false, "towTruck": false },
+    "notes": "suburban, not highway",
+    "confirmed": false
+  },
+  {
+    "clip": "car-traffic-3",
+    "incident": false,
+    "type": "none",
+    "responders": { "police": false, "ambulance": false, "fire": false, "towTruck": false },
+    "notes": "",
+    "confirmed": false
+  },
+  {
+    "clip": "road-work-2",
+    "incident": true,
+    "type": "construction",
+    "responders": { "police": false, "ambulance": false, "fire": false, "towTruck": false },
+    "notes": "workers, construction vehicles, cones",
+    "confirmed": false
+  },
+  {
+    "clip": "road-work-3",
+    "incident": true,
+    "type": "construction",
+    "responders": { "police": false, "ambulance": false, "fire": false, "towTruck": false },
+    "notes": "workers, construction vehicles, cones",
+    "confirmed": false
+  }
+]

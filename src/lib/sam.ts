@@ -18,6 +18,8 @@ export const CONCEPTS = [
   'tow truck',
   'person',
   'traffic cone',
+  'construction vehicle',
+  'road barrier',
 ];
 
 export const SAM_MODEL = 'sam-3.1';

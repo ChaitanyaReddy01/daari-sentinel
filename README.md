@@ -17,6 +17,7 @@ built during the hackathon window.
 | Oct 27 | Verified: build, prep, cached analyze, overlay boxes, 390px layout (live SAM call pending a real API key) |
 | Oct 27 | first live SAM 3.1 runs on real footage; concept list moved to plain objects, Muse Spark will judge incidents |
 | Oct 27 | Muse Spark scene verdict with evidence cross-check (Day 2) |
+| Oct 27 | footage set expanded to 19 clips with ground-truth labels and a first evaluation run |
 
 ## Meta models used
 
@@ -61,3 +62,20 @@ and SAM results are cached under `data/cache/` so repeat runs are free.
 | ---- | ---------- | ------- |
 | crash-1.mp4 | https://www.pexels.com/video/aerial-shot-of-a-car-accident-on-a-highway-12753260/ | Pexels License |
 | traffic-normal-1.mp4 | https://www.pexels.com/video/busy-urban-street-with-taxis-in-traffic-jam-36911808/ | Pexels License |
+| traffic-cars-1.mp4 | https://www.pexels.com/video/an-aerial-view-of-a-busy-street-with-cars-and-people-19166351/ | Pexels License |
+| traffic-cars-2.mp4 | https://www.pexels.com/video/an-aerial-view-of-a-city-street-with-cars-and-people-19166359/ | Pexels License |
+| traffic-cars-3.mp4 | https://www.pexels.com/video/traffic-on-street-in-rush-hour-14552312/ | Pexels License |
+| police-car-1.mp4 | https://www.pexels.com/video/aerial-nighttime-traffic-stop-with-police-lights-32538553/ | Pexels License |
+| cars-with-police-1.mp4 | https://www.pexels.com/video/aerial-view-of-busy-atlanta-highway-at-night-33134648/ | Pexels License |
+| car-police-tow-1.mp4 | https://pixabay.com/videos/car-accident-police-9781/ | Pixabay Content License |
+| crowd-people-1.mp4 | https://www.pexels.com/video/bustling-street-market-aerial-view-35245798/ | Pexels License |
+| car-tow-ambulance-police-1.mp4 | https://www.pexels.com/video/drone-footage-of-car-accident-at-an-intersection-4686100/ | Pexels License |
+| car-accident-1.mp4 | https://www.pexels.com/video/17785830/ | Pexels License |
+| dash-cam-car-1.mp4 | https://www.pexels.com/video/a-time-lapse-video-of-moving-cars-8996082/ | Pexels License |
+| ambulance-fire-1.mp4 | https://www.pexels.com/video/a-fire-truck-and-police-vehicles-in-the-street-at-night-11387588/ | Pexels License |
+| rd-construction-1.mp4 | https://www.pexels.com/video/moving-vehicles-on-a-highway-8597290/ | Pexels License |
+| policecars-1.mp4 | https://www.pexels.com/video/aerial-view-of-police-operation-in-suburban-area-33930776/ | Pexels License |
+| policecars-2.mp4 | https://www.pexels.com/video/aerial-view-of-police-activity-in-neighborhood-33930780/ | Pexels License |
+| car-traffic-3.mp4 | https://www.pexels.com/video/an-aerial-view-of-a-highway-with-cars-on-it-19452742/ | Pexels License |
+| road-work-2.mp4 | https://www.pexels.com/video/people-working-on-the-road-4430486/ | Pexels License |
+| road-work-3.mp4 | https://www.pexels.com/video/a-road-with-construction-vehicles-and-traffic-cones-28001192/ | Pexels License |

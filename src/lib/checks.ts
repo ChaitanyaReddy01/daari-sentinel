@@ -78,29 +78,57 @@ export function buildChecks({
 
   if (verdict.vehiclesInvolved !== null) {
     const n = verdict.vehiclesInvolved;
-    const car = sam['car'] ?? null;
-    const truck = sam['truck'] ?? null;
-    if (car === null || truck === null) {
+    const label = pluralize(n, 'vehicle', 'vehicles');
+    if (n === 0) {
       checks.push({
-        claim: `${pluralize(n, 'vehicle', 'vehicles')} involved`,
-        status: 'unverified',
-        detail: "Missing SAM data for 'car'/'truck' counts (run Analyze first).",
+        claim: `${label} involved`,
+        status: 'supported',
+        detail: 'Claim is 0 vehicles involved — nothing to match.',
       });
     } else {
-      const total = car.summary.objects + truck.summary.objects;
-      checks.push(
-        total >= n
-          ? {
-              claim: `${pluralize(n, 'vehicle', 'vehicles')} involved`,
-              status: 'supported',
-              detail: `SAM tracked ${total} cars+trucks (claim: ${n}).`,
-            }
-          : {
-              claim: `${pluralize(n, 'vehicle', 'vehicles')} involved`,
-              status: 'unverified',
-              detail: `SAM tracked only ${total} cars+trucks (claim: ${n}).`,
-            },
-      );
+      const car = sam['car'] ?? null;
+      const truck = sam['truck'] ?? null;
+      if (car === null || truck === null) {
+        checks.push({
+          claim: `${label} involved`,
+          status: 'unverified',
+          detail: "Missing SAM data for 'car'/'truck' counts (run Analyze first).",
+        });
+      } else if (verdict.evidence.length === 0) {
+        checks.push({
+          claim: `${label} involved`,
+          status: 'unverified',
+          detail: 'No evidence timestamps to compare against.',
+        });
+      } else {
+        const f = fps > 0 ? fps : 10;
+        const boxes = [
+          ...car.boxes.map((b) => ({ frame: b.frame, id: `car:${b.id}` })),
+          ...truck.boxes.map((b) => ({ frame: b.frame, id: `truck:${b.id}` })),
+        ];
+        let best: { second: number; count: number } | null = null;
+        for (const e of verdict.evidence) {
+          const lo = e.second * f - f;
+          const hi = e.second * f + f;
+          const ids = new Set(
+            boxes.filter((b) => b.frame >= lo && b.frame <= hi).map((b) => b.id),
+          );
+          if (!best || ids.size > best.count) best = { second: e.second, count: ids.size };
+        }
+        checks.push(
+          best !== null && best.count >= n
+            ? {
+                claim: `${label} involved`,
+                status: 'supported',
+                detail: `SAM tracked ${best.count} cars+trucks within ±1s of second ${best.second} (claim: ${n}).`,
+              }
+            : {
+                claim: `${label} involved`,
+                status: 'unverified',
+                detail: `SAM tracked at most ${best?.count ?? 0} cars+trucks near any evidence second (claim: ${n}).`,
+              },
+        );
+      }
     }
   }
 

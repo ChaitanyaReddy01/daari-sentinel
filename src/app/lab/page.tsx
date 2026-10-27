@@ -50,6 +50,7 @@ interface Verdict {
   evidence: { second: number; what: string }[];
   confidence: number;
   summary: string;
+  details: string;
 }
 
 interface VerdictCheck {
@@ -126,6 +127,7 @@ export default function LabPage() {
   const [verdictStatus, setVerdictStatus] = useState<{
     cached: boolean;
     estimateUSD: number;
+    hasSamResults: boolean;
   } | null>(null);
   const [verdictLoading, setVerdictLoading] = useState(false);
 
@@ -261,7 +263,11 @@ export default function LabPage() {
       try {
         const res = await fetch(`/api/lab/verdict?clip=${encodeURIComponent(clip)}`);
         if (!res.ok) return;
-        const data = (await res.json()) as { cached: boolean; estimateUSD: number };
+        const data = (await res.json()) as {
+          cached: boolean;
+          estimateUSD: number;
+          hasSamResults: boolean;
+        };
         if (!cancelled) setVerdictStatus(data);
       } catch {
         // Leave the button without an estimate; the POST will surface errors.
@@ -358,7 +364,11 @@ export default function LabPage() {
       setVerdictCached(data.cached);
       setVerdictCost(data.estCostThisRun);
       setSpent(data.spentTotal);
-      setVerdictStatus({ cached: true, estimateUSD: 0 });
+      setVerdictStatus((prev) => ({
+        cached: true,
+        estimateUSD: 0,
+        hasSamResults: prev?.hasSamResults ?? summaries !== null,
+      }));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Verdict failed');
     } finally {
@@ -600,15 +610,18 @@ export default function LabPage() {
                   </p>
                 )}
               </div>
-              {!summaries && (
-                <p className="text-xs text-stone-500">
-                  Tip: run Analyze first so the verdict can be cross-checked against tracked
-                  objects.
-                </p>
-              )}
+              {!summaries &&
+                verdictStatus !== null &&
+                !verdictStatus.hasSamResults && (
+                  <p className="text-xs text-stone-500">
+                    Tip: run Analyze first so the verdict can be cross-checked against tracked
+                    objects.
+                  </p>
+                )}
               {verdict && (
                 <div className="space-y-3">
                   <p className="text-lg font-medium leading-snug">{verdict.summary}</p>
+                  <p className="text-sm text-stone-600">{verdict.details}</p>
                   <div className="flex flex-wrap gap-2 text-xs">
                     {[
                       `type: ${pretty(verdict.type)}`,
