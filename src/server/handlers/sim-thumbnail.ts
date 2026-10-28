@@ -5,6 +5,7 @@ import path from 'node:path';
 import { z } from 'zod';
 
 import { ClipName, blurredVideoPath, errMessage, hashFile, jsonError, loadPreppedClip } from '@/lib/clips';
+import { blobClipsEnabled, clipThumbUrl } from '@/lib/clip-urls';
 
 const Query = z.object({ clip: ClipName, second: z.coerce.number().min(0) });
 
@@ -28,6 +29,12 @@ export async function GET(req: Request): Promise<Response> {
       `Unknown clip "${clip}". Prep it first: npx tsx scripts/prep-clip.ts ${clip}`,
       404,
     );
+  }
+
+  // Blob mode (production, no ffmpeg): redirect to the pre-made thumbnail.
+  if (blobClipsEnabled()) {
+    const u = clipThumbUrl(clip, second);
+    if (u.startsWith('http')) return Response.redirect(u, 302);
   }
 
   // Thumbnails come from the BLURRED clip, keyed by its hash, so no cached

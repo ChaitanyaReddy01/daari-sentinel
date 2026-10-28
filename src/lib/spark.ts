@@ -1,9 +1,6 @@
-import fs from 'node:fs';
-import path from 'node:path';
-
 import { meta } from './meta';
 import { uploadClip } from './files';
-import { hashFile, loadPreppedClip, preppedVideoPath } from './clips';
+import { loadPreppedClip, preppedHash, preppedVideoPath } from './clips';
 import { readSamCache } from './sam-cache';
 import { CONCEPTS } from './sam';
 import {
@@ -24,7 +21,8 @@ import {
   verdictCachePath,
   type VerdictCachedResult,
 } from './verdict-cache';
-import { assertLiveCalls } from './snapshot';
+import { ledgerAppend } from './ledger';
+import { assertLiveCalls, writeCacheFile } from './snapshot';
 
 /**
  * Muse Spark scene verdict. Keyed: every fresh call bills the API, so results
@@ -68,8 +66,6 @@ export function samHints(hash: string): string {
   return `Object tracker found: ${parts.join(', ')}.`;
 }
 
-const LEDGER_PATH = path.join(process.cwd(), 'data', 'ledger.jsonl');
-
 export interface VerdictLedgerEntry {
   ts: string;
   model: string;
@@ -80,9 +76,8 @@ export interface VerdictLedgerEntry {
   estUSD: number;
 }
 
-function appendVerdictLedger(entry: VerdictLedgerEntry): void {
-  fs.mkdirSync(path.dirname(LEDGER_PATH), { recursive: true });
-  fs.appendFileSync(LEDGER_PATH, JSON.stringify(entry) + '\n');
+async function appendVerdictLedger(entry: VerdictLedgerEntry): Promise<void> {
+  await ledgerAppend(entry as unknown as Record<string, unknown>);
 }
 
 function isFormatError(err: unknown): boolean {
@@ -150,7 +145,7 @@ export async function runVerdict({
     throw new Error(`Unknown clip "${clip}". Prep it first: npx tsx scripts/prep-clip.ts ${clip}`);
   }
   const videoPath = preppedVideoPath(clip);
-  const hash = hashFile(videoPath);
+  const hash = preppedHash(clip);
 
   const hit = readVerdictCache(hash);
   if (hit) return { result: hit, cached: true };
@@ -246,9 +241,8 @@ export async function runVerdict({
     usage: { inputTokens: totalIn, outputTokens: totalOut, cachedInputTokens: totalCached },
     estUSD,
   };
-  fs.mkdirSync(path.dirname(verdictCachePath(hash)), { recursive: true });
-  fs.writeFileSync(verdictCachePath(hash), JSON.stringify(out));
-  appendVerdictLedger({
+  writeCacheFile(verdictCachePath(hash), JSON.stringify(out));
+  await appendVerdictLedger({
     ts: new Date().toISOString(),
     model: MUSE_SPARK_MODEL,
     hash,

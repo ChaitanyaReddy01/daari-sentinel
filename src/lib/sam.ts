@@ -1,12 +1,10 @@
-import fs from 'node:fs';
-import path from 'node:path';
-
 import { parseVideoStream, recordsOfKind } from '@meta-sam/parser';
 import type { ResponseInputMessageItem } from 'openai/resources/responses/responses';
 
+import { ledgerAppend, ledgerSpendTotal } from './ledger';
 import { meta } from './meta';
 import { readSamCache, samCachePath, slug } from './sam-cache';
-import { assertLiveCalls } from './snapshot';
+import { assertLiveCalls, writeCacheFile } from './snapshot';
 
 export { readSamCache, samCachePath, slug };
 
@@ -71,8 +69,6 @@ export interface LedgerEntry {
   estUSD: number;
 }
 
-const LEDGER_PATH = path.join(process.cwd(), 'data', 'ledger.jsonl');
-
 /** Billable frames for one SAM request: frame count, minimum 50. */
 export function billableFrames(frameCount: number): number {
   return Math.max(MIN_BILLABLE_FRAMES, frameCount);
@@ -83,33 +79,13 @@ export function estimateCostUSD(frameCount: number): number {
   return (billableFrames(frameCount) / 1000) * PRICE_PER_1K_FRAMES;
 }
 
-export function appendLedger(entry: LedgerEntry): void {
-  fs.mkdirSync(path.dirname(LEDGER_PATH), { recursive: true });
-  fs.appendFileSync(LEDGER_PATH, JSON.stringify(entry) + '\n');
+export async function appendLedger(entry: LedgerEntry): Promise<void> {
+  await ledgerAppend(entry as unknown as Record<string, unknown>);
 }
 
 /** Total estimated spend across every real (non-cached) SAM call. */
-export function getSpend(): number {
-  let total = 0;
-  let raw: string;
-  try {
-    raw = fs.readFileSync(LEDGER_PATH, 'utf8');
-  } catch {
-    return 0;
-  }
-  for (const line of raw.split('\n')) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    try {
-      const entry = JSON.parse(trimmed) as Partial<LedgerEntry>;
-      if (typeof entry.estUSD === 'number' && Number.isFinite(entry.estUSD)) {
-        total += entry.estUSD;
-      }
-    } catch {
-      // Skip malformed ledger lines.
-    }
-  }
-  return total;
+export async function getSpend(): Promise<number> {
+  return ledgerSpendTotal();
 }
 
 /**
@@ -190,10 +166,9 @@ export async function runSam({
     fps: clipMeta.fps,
   };
   const outPath = samCachePath(hash, concept);
-  fs.mkdirSync(path.dirname(outPath), { recursive: true });
-  fs.writeFileSync(outPath, JSON.stringify(out));
+  writeCacheFile(outPath, JSON.stringify(out));
 
-  appendLedger({
+  await appendLedger({
     ts: new Date().toISOString(),
     model: SAM_MODEL,
     hash,

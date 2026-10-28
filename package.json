@@ -13,10 +13,13 @@
     "test:agent": "tsx scripts/agent-check.ts",
     "blur:sam": "tsx scripts/blur-run.ts",
     "blur:clips": "tsx scripts/blur-clips.ts",
-    "snapshot": "tsx scripts/export-snapshot.ts"
+    "snapshot": "tsx scripts/export-snapshot.ts",
+    "upload-clips": "tsx scripts/upload-clips.ts"
   },
   "dependencies": {
     "@meta-sam/parser": "^0.1.0",
+    "@upstash/redis": "^1.40.0",
+    "@vercel/blob": "^2.8.2",
     "ffmpeg-static": "^5.3.0",
     "next": "14.2.35",
     "openai": "^7.45.0",

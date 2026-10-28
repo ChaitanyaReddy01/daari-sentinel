@@ -4,6 +4,8 @@ import path from 'node:path';
 
 import { z } from 'zod';
 
+import { snapshotClipList, snapshotClipMeta } from './snapshot';
+
 /**
  * Key-free helpers for prepped clips. This module never touches the Meta API,
  * so cached reads and clip listings work without MODEL_API_KEY.
@@ -92,7 +94,17 @@ export function loadPreppedClip(clip: string): PreppedClip | null {
       sizeBytes: stat.size,
     };
   } catch {
-    return null;
+    // Production has no video files: fall back to snapshot metadata.
+    const snap = snapshotClipMeta(clip);
+    if (!snap) return null;
+    return {
+      name: snap.name,
+      frameCount: snap.frameCount,
+      fps: snap.fps,
+      width: snap.width,
+      height: snap.height,
+      sizeBytes: snap.sizeBytes,
+    };
   }
 }
 
@@ -101,7 +113,17 @@ export function listPreppedClips(): PreppedClip[] {
   try {
     entries = fs.readdirSync(preppedDir());
   } catch {
-    return [];
+    // Production has no video files: list from the snapshot.
+    return snapshotClipList()
+      .map((c) => ({
+        name: c.name,
+        frameCount: c.frameCount,
+        fps: c.fps,
+        width: c.width,
+        height: c.height,
+        sizeBytes: c.sizeBytes,
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name));
   }
   const clips: PreppedClip[] = [];
   for (const entry of entries) {
@@ -117,6 +139,17 @@ export function listPreppedClips(): PreppedClip[] {
 export function hashFile(localPath: string): string {
   const bytes = fs.readFileSync(localPath);
   return crypto.createHash('sha256').update(bytes).digest('hex');
+}
+
+/** Content hash of a prepped clip: file bytes locally, snapshot in production. */
+export function preppedHash(clip: string): string {
+  try {
+    return hashFile(preppedVideoPath(clip));
+  } catch {
+    const snap = snapshotClipMeta(clip);
+    if (!snap) throw new Error(`Unknown clip "${clip}" and no snapshot hash.`);
+    return snap.sha256;
+  }
 }
 
 export function jsonError(message: string, status: number): Response {

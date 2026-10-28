@@ -2,7 +2,9 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { assertLiveCalls, readSnapshotJson } from './snapshot';
+import { ledgerAppend } from './ledger';
+import { checkRateLimit } from './ratelimit';
+import { assertLiveCalls, readSnapshotJson, writeCacheFile } from './snapshot';
 
 /**
  * Server-only trip routing: origin → destination with alternatives and step
@@ -20,7 +22,6 @@ const FIELD_MASK = [
   'routes.legs.steps.navigationInstruction',
 ].join(',');
 const CACHE_DIR = path.join(process.cwd(), 'data', 'cache', 'routes');
-const LEDGER_PATH = path.join(process.cwd(), 'data', 'ledger.jsonl');
 
 export interface TripStep {
   distanceMeters: number;
@@ -54,18 +55,14 @@ function serverKey(): string {
   return key;
 }
 
-function appendRoutesLedger(): void {
-  fs.mkdirSync(path.dirname(LEDGER_PATH), { recursive: true });
-  fs.appendFileSync(
-    LEDGER_PATH,
-    JSON.stringify({
-      ts: new Date().toISOString(),
-      model: 'routes-api',
-      route: 'trip',
-      kind: 'routes',
-      estUSD: 0,
-    }) + '\n',
-  );
+async function appendTripLedger(): Promise<void> {
+  await ledgerAppend({
+    ts: new Date().toISOString(),
+    model: 'routes-api',
+    route: 'trip',
+    kind: 'routes',
+    estUSD: 0,
+  });
 }
 
 function waypointBody(p: TripPoint): Record<string, unknown> {
@@ -75,7 +72,10 @@ function waypointBody(p: TripPoint): Record<string, unknown> {
 }
 
 /** Route + alternatives for a trip, cached by origin+destination (+via). */
-export async function getTrip(req: TripRequest): Promise<{ routes: TripRoute[] }> {
+export async function getTrip(
+  req: TripRequest,
+  clientIp = 'unknown',
+): Promise<{ routes: TripRoute[] }> {
   const origin = waypointBody(req.origin);
   const destination = waypointBody(req.destination);
   const cacheKey = crypto
@@ -120,8 +120,7 @@ export async function getTrip(req: TripRequest): Promise<{ routes: TripRoute[] }
           }
         });
       }
-      fs.mkdirSync(CACHE_DIR, { recursive: true });
-      fs.writeFileSync(cachePath, JSON.stringify(legacy));
+      writeCacheFile(cachePath, JSON.stringify(legacy));
       return legacy;
     }
   } catch {
@@ -140,6 +139,7 @@ export async function getTrip(req: TripRequest): Promise<{ routes: TripRoute[] }
   }
 
   assertLiveCalls(`Routes API trip ${cacheKey.slice(0, 12)}…`);
+  await checkRateLimit('routes', clientIp);
   const body: Record<string, unknown> = {
     origin,
     destination,
@@ -223,8 +223,7 @@ export async function getTrip(req: TripRequest): Promise<{ routes: TripRoute[] }
     throw new Error('Routes API trip returned no usable routes.');
   }
   const out = { routes };
-  fs.mkdirSync(CACHE_DIR, { recursive: true });
-  fs.writeFileSync(cachePath, JSON.stringify(out));
-  appendRoutesLedger();
+  writeCacheFile(cachePath, JSON.stringify(out));
+  await appendTripLedger();
   return out;
 }

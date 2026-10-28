@@ -6,10 +6,11 @@ import { parseImageStream, recordsOfKind } from '@meta-sam/parser';
 
 import { meta } from './meta';
 import { uploadClip } from './files';
-import { hashFile, loadPreppedClip, preppedVideoPath } from './clips';
+import { loadPreppedClip, preppedHash, preppedVideoPath } from './clips';
+import { ledgerAppend } from './ledger';
 import { slug } from './sam-cache';
 import { SAM_MODEL } from './sam';
-import { assertLiveCalls, readSnapshotJson } from './snapshot';
+import { assertLiveCalls, readSnapshotJson, writeCacheFile } from './snapshot';
 
 /**
  * True-count pass: SAM video tracking caps at 16 objects per frame, so for
@@ -26,7 +27,6 @@ export const STILLS_PRICE_PER_IMAGE = 2.5 / 1000;
 
 const STILLS_DIR = path.join(process.cwd(), 'data', 'cache', 'stills');
 const COUNTS_DIR = path.join(process.cwd(), 'data', 'cache', 'sam-image');
-const LEDGER_PATH = path.join(process.cwd(), 'data', 'ledger.jsonl');
 
 /** Frame numbers at 25/50/75% of the clip, deduplicated. */
 export function stillFrames(frameCount: number, fps: number): number[] {
@@ -99,9 +99,8 @@ export interface StillsLedgerEntry {
   estUSD: number;
 }
 
-function appendStillsLedger(entry: StillsLedgerEntry): void {
-  fs.mkdirSync(path.dirname(LEDGER_PATH), { recursive: true });
-  fs.appendFileSync(LEDGER_PATH, JSON.stringify(entry) + '\n');
+async function appendStillsLedger(entry: StillsLedgerEntry): Promise<void> {
+  await ledgerAppend(entry as unknown as Record<string, unknown>);
 }
 
 /**
@@ -121,7 +120,7 @@ export async function runStillsCount({
   if (!clipInfo) {
     throw new Error(`Unknown clip "${clip}". Prep it first: npx tsx scripts/prep-clip.ts ${clip}`);
   }
-  const hash = hashFile(preppedVideoPath(clip));
+  const hash = preppedHash(clip);
 
   const hit = readStillsCount(hash, frame, concept);
   if (hit !== null) return { count: hit, cached: true };
@@ -159,10 +158,9 @@ export async function runStillsCount({
   const count = ids.size;
 
   const outPath = stillCountPath(hash, frame, concept);
-  fs.mkdirSync(path.dirname(outPath), { recursive: true });
-  fs.writeFileSync(outPath, JSON.stringify({ count }));
+  writeCacheFile(outPath, JSON.stringify({ count }));
 
-  appendStillsLedger({
+  await appendStillsLedger({
     ts: new Date().toISOString(),
     model: SAM_MODEL,
     hash,
@@ -186,7 +184,7 @@ export async function trueCounts(
 ): Promise<Record<string, number | null>> {
   const clipInfo = loadPreppedClip(clip);
   if (!clipInfo) throw new Error(`Unknown clip "${clip}".`);
-  const hash = hashFile(preppedVideoPath(clip));
+  const hash = preppedHash(clip);
   const frames = stillFrames(clipInfo.frameCount, clipInfo.fps);
   const out: Record<string, number | null> = {};
   for (const concept of STILLS_CONCEPTS) {

@@ -1,0 +1,9 @@
+# Keep video and local runtime data out of the Vercel deploy.
+clips/
+public/clips/
+data/cache/
+data/ledger.jsonl
+.verify-shots/
+.tmp-verify/
+.next-verify/
+.npm-cache/

@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 import { errMessage, jsonError } from '@/lib/clips';
 import { searchStops } from '@/lib/places';
+import { clientIpFrom } from '@/lib/ratelimit';
 
 const Query = z.object({
   lat: z.coerce.number().min(-90).max(90),
@@ -16,7 +17,7 @@ export async function GET(req: Request): Promise<Response> {
     return jsonError(`Invalid query: ${parsed.error.issues.map((i) => i.message).join('; ')}`, 400);
   }
   try {
-    const stops = await searchStops(parsed.data.lat, parsed.data.lng);
+    const stops = await searchStops(parsed.data.lat, parsed.data.lng, clientIpFrom(req));
     return Response.json({ stops });
   } catch (err) {
     return jsonError(errMessage(err), 500);

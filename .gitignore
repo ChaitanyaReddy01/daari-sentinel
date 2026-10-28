@@ -54,3 +54,6 @@ next-env.d.ts
 
 # throwaway verification screenshots
 .verify-shots/
+
+.vercel
+.env*

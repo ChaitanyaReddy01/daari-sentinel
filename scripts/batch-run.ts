@@ -380,7 +380,7 @@ async function main(): Promise<void> {
     `- Type accuracy: ${typeOk}/${typeTotal}`,
     `- Responder accuracy: ${respOk}/${respTotal}`,
     `- Batch spend (this run): $${batchSpend.toFixed(4)}`,
-    `- Ledger total spend: $${getSpend().toFixed(4)}`,
+    `- Ledger total spend: $${(await getSpend()).toFixed(4)}`,
     '',
     '## Disagreeing clips',
     '',
@@ -405,7 +405,7 @@ async function main(): Promise<void> {
   console.log(
     `batch-run: incident ${incidentOk}/${incidentTotal}, type ${typeOk}/${typeTotal}, ` +
       `responders ${respOk}/${respTotal}, batch spend $${batchSpend.toFixed(4)}, ` +
-      `ledger total $${getSpend().toFixed(4)}`,
+      `ledger total $${(await getSpend()).toFixed(4)}`,
   );
   if (failures.length > 0) {
     console.log(`batch-run: ${failures.length} clip(s) failed (see report).`);

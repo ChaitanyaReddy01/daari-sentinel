@@ -6,10 +6,9 @@ import { z } from 'zod';
 import {
   ClipName,
   errMessage,
-  hashFile,
   jsonError,
   loadPreppedClip,
-  preppedVideoPath,
+  preppedHash,
 } from '@/lib/clips';
 import { MUSE_SPARK_MODEL } from '@/lib/config';
 import { readSamCache } from '@/lib/sam-cache';
@@ -30,14 +29,17 @@ const CHECK_CONCEPTS = [
   'person',
 ];
 
-/** True when any SAM result is cached for this clip hash. */
+/** True when any SAM result is cached for this clip hash (cache or snapshot). */
 function hasSamResults(hash: string): boolean {
-  try {
-    const dir = path.join(process.cwd(), 'data', 'cache', 'sam', hash);
-    return fs.readdirSync(dir).some((f) => f.endsWith('.json'));
-  } catch {
-    return false;
+  for (const root of ['cache', 'snapshot']) {
+    try {
+      const dir = path.join(process.cwd(), 'data', root, 'sam', hash);
+      if (fs.readdirSync(dir).some((f) => f.endsWith('.json'))) return true;
+    } catch {
+      // Try the next root.
+    }
   }
+  return false;
 }
 
 /** Key-free probe: is this clip's verdict cached, and what would it cost? */
@@ -59,7 +61,7 @@ export async function GET(req: Request): Promise<Response> {
 
   let hash: string;
   try {
-    hash = hashFile(preppedVideoPath(clip));
+    hash = preppedHash(clip);
   } catch (err) {
     return jsonError(`Could not read clip file: ${errMessage(err)}`, 500);
   }
@@ -96,7 +98,7 @@ export async function POST(req: Request): Promise<Response> {
 
   let hash: string;
   try {
-    hash = hashFile(preppedVideoPath(clip));
+    hash = preppedHash(clip);
   } catch (err) {
     return jsonError(`Could not read clip file: ${errMessage(err)}`, 500);
   }
@@ -120,7 +122,7 @@ export async function POST(req: Request): Promise<Response> {
       checks,
       cached,
       estCostThisRun: cached ? 0 : result.estUSD,
-      spentTotal: getSpend(),
+      spentTotal: await getSpend(),
     });
   } catch (err) {
     return jsonError(errMessage(err), 500);

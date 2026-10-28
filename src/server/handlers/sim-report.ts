@@ -3,9 +3,9 @@ import { z } from 'zod';
 import {
   ClipName,
   errMessage,
-  hashFile,
   jsonError,
   loadPreppedClip,
+  preppedHash,
   preppedVideoPath,
 } from '@/lib/clips';
 import { MUSE_SPARK_MODEL } from '@/lib/config';
@@ -52,7 +52,7 @@ export async function GET(req: Request): Promise<Response> {
 
   let hash: string;
   try {
-    hash = hashFile(preppedVideoPath(clip));
+    hash = preppedHash(clip);
   } catch (err) {
     return jsonError(`Could not read clip file: ${errMessage(err)}`, 500);
   }
@@ -95,7 +95,7 @@ export async function POST(req: Request): Promise<Response> {
 
   let hash: string;
   try {
-    hash = hashFile(preppedVideoPath(clip));
+    hash = preppedHash(clip);
   } catch (err) {
     return jsonError(`Could not read clip file: ${errMessage(err)}`, 500);
   }
@@ -133,7 +133,7 @@ export async function POST(req: Request): Promise<Response> {
       verdict: result.verdict,
       cached: allCached,
       estCostThisRun,
-      spentTotal: getSpend(),
+      spentTotal: await getSpend(),
     });
   } catch (err) {
     return jsonError(errMessage(err), 500);

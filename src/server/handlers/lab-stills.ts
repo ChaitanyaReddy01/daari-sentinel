@@ -6,8 +6,7 @@ import {
   errMessage,
   jsonError,
   loadPreppedClip,
-  preppedVideoPath,
-  hashFile,
+  preppedHash,
 } from '@/lib/clips';
 
 const Query = z.object({ clip: ClipName, concept: ConceptName });
@@ -45,7 +44,7 @@ export async function GET(req: Request): Promise<Response> {
 
   let hash: string;
   try {
-    hash = hashFile(preppedVideoPath(clip));
+    hash = preppedHash(clip);
   } catch (err) {
     return jsonError(`Could not read clip file: ${errMessage(err)}`, 500);
   }

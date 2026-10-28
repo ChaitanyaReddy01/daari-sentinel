@@ -146,6 +146,13 @@ or [http://localhost:3000/sim](http://localhost:3000/sim) for the driving simula
 The demo replays from the committed snapshot at $0; set `LIVE_CALLS=true` to allow
 fresh API calls.
 
+Production runs on Vercel in read-only mode: clips stream from Vercel Blob
+(`NEXT_PUBLIC_CLIPS_SOURCE=blob`), caches read from `data/snapshot/` only, the
+cost ledger lives in Upstash Redis, and `LIVE_CALLS_ENABLED=false` blocks all
+live calls instantly. Required Vercel env vars: `NEXT_PUBLIC_CLIPS_SOURCE=blob`,
+`NEXT_PUBLIC_GOOGLE_MAPS_BROWSER_KEY`, `GOOGLE_MAPS_SERVER_KEY`,
+`BLOB_READ_WRITE_TOKEN`, `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN`.
+
 ## Footage credits
 
 | Clip | Source URL | License |

@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import { errMessage, jsonError } from '@/lib/clips';
+import { clientIpFrom } from '@/lib/ratelimit';
 import { getTrip, type TripRequest } from '@/lib/trip';
 
 const LatLng = z.object({ lat: z.number().min(-90).max(90), lng: z.number().min(-180).max(180) });
@@ -26,7 +27,7 @@ export async function POST(req: Request): Promise<Response> {
     return jsonError(`Invalid request: ${parsed.error.issues.map((i) => i.message).join('; ')}`, 400);
   }
   try {
-    const trip = await getTrip(parsed.data as TripRequest);
+    const trip = await getTrip(parsed.data as TripRequest, clientIpFrom(req));
     return Response.json(trip);
   } catch (err) {
     return jsonError(errMessage(err), 500);

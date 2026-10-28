@@ -7,7 +7,7 @@ export async function GET(): Promise<Response> {
   try {
     // Dynamic import: keyed modules throw at load when MODEL_API_KEY is unset.
     const sam = await import('@/lib/sam');
-    spentTotal = sam.getSpend();
+    spentTotal = await sam.getSpend();
     concepts = [...sam.CONCEPTS];
     budgetUSD = sam.LAB_BUDGET_USD;
   } catch {

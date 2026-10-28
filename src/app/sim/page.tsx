@@ -7,6 +7,7 @@
 import { useEffect, useRef, useState } from 'react';
 
 import { displayClearance, type AgentAssessment } from '@/lib/agent-guard';
+import { clipThumbUrl, clipVideoUrl } from '@/lib/clip-urls';
 import { clearanceEstimate } from '@/lib/clearance';
 import {
   DEMO_EVENTS,
@@ -1551,9 +1552,7 @@ export default function SimPage() {
       lanesBlocked: assessed ? assessed.assessment.lanes.blocked : (verdict.lanesBlocked ?? 'unknown'),
       active: stage !== 'cleared',
       thumbnail:
-        first !== undefined
-          ? `/api/sim/thumbnail?clip=${encodeURIComponent(clip)}&second=${first.second}`
-          : null,
+        first !== undefined ? clipThumbUrl(clip, first.second) : null,
       responders: verdict.responders,
       summary: verdict.summary,
       type: verdict.type,
@@ -3016,7 +3015,7 @@ export default function SimPage() {
             </div>
             <video
               key={`${evidencePlay.clip}-${evidencePlay.second}`}
-              src={`/clips/blurred/${encodeURIComponent(evidencePlay.clip)}.mp4#t=${evidencePlay.second}`}
+              src={`${clipVideoUrl(evidencePlay.clip)}#t=${evidencePlay.second}`}
               controls
               autoPlay
               playsInline

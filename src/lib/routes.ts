@@ -1,7 +1,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { assertLiveCalls, readSnapshotJson } from './snapshot';
+import { ledgerAppend } from './ledger';
+import { checkRateLimit } from './ratelimit';
+import { assertLiveCalls, readSnapshotJson, writeCacheFile } from './snapshot';
 
 /**
  * Server-only Google Routes API client (computeRoutes). Never import from
@@ -11,7 +13,6 @@ import { assertLiveCalls, readSnapshotJson } from './snapshot';
 const ROUTES_URL = 'https://routes.googleapis.com/directions/v2:computeRoutes';
 const FIELD_MASK = 'routes.duration,routes.distanceMeters,routes.polyline.encodedPolyline';
 const CACHE_DIR = path.join(process.cwd(), 'data', 'cache', 'routes');
-const LEDGER_PATH = path.join(process.cwd(), 'data', 'ledger.jsonl');
 
 export interface LatLng {
   lat: number;
@@ -53,22 +54,12 @@ export function readRouteCache(name: string): RouteData | null {
   return parsed;
 }
 
-function appendRoutesLedger(name: string): void {
-  fs.mkdirSync(path.dirname(LEDGER_PATH), { recursive: true });
-  fs.appendFileSync(
-    LEDGER_PATH,
-    JSON.stringify({
-      ts: new Date().toISOString(),
-      model: 'routes-api',
-      route: name,
-      kind: 'routes',
-      estUSD: 0,
-    }) + '\n',
-  );
-}
-
-async function fetchRoute(name: 'main' | 'detour'): Promise<RouteData> {
+async function fetchRoute(
+  name: 'main' | 'detour',
+  clientIp: string,
+): Promise<RouteData> {
   assertLiveCalls(`Routes API ${name} route`);
+  await checkRateLimit('routes', clientIp);
   const body: Record<string, unknown> = {
     origin: { address: ORIGIN },
     destination: { address: DESTINATION },
@@ -124,19 +115,29 @@ async function fetchRoute(name: 'main' | 'detour'): Promise<RouteData> {
     distanceMeters: r.distanceMeters,
     durationSeconds: seconds ? parseInt(seconds, 10) : 0,
   };
-  fs.mkdirSync(CACHE_DIR, { recursive: true });
-  fs.writeFileSync(cachePath(name), JSON.stringify(out));
-  appendRoutesLedger(name);
+  writeCacheFile(cachePath(name), JSON.stringify(out));
+  await ledgerAppend({
+    ts: new Date().toISOString(),
+    model: 'routes-api',
+    route: name,
+    kind: 'routes',
+    estUSD: 0,
+  });
   return out;
 }
 
 /** Cached route, fetched once from the Routes API on first use. */
-export async function getRoute(name: 'main' | 'detour'): Promise<RouteData> {
-  return readRouteCache(name) ?? fetchRoute(name);
+export async function getRoute(
+  name: 'main' | 'detour',
+  clientIp = 'unknown',
+): Promise<RouteData> {
+  return readRouteCache(name) ?? fetchRoute(name, clientIp);
 }
 
-export async function getSimRoutes(): Promise<{ main: RouteData; detour: RouteData }> {
-  const main = await getRoute('main');
-  const detour = await getRoute('detour');
+export async function getSimRoutes(
+  clientIp = 'unknown',
+): Promise<{ main: RouteData; detour: RouteData }> {
+  const main = await getRoute('main', clientIp);
+  const detour = await getRoute('detour', clientIp);
   return { main, detour };
 }

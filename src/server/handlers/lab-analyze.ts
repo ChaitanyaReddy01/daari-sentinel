@@ -6,8 +6,8 @@ import {
   errMessage,
   jsonError,
   loadPreppedClip,
+  preppedHash,
   preppedVideoPath,
-  hashFile,
 } from '@/lib/clips';
 
 const Body = z.object({
@@ -39,7 +39,7 @@ export async function POST(req: Request): Promise<Response> {
 
   let hash: string;
   try {
-    hash = hashFile(preppedVideoPath(clip));
+    hash = preppedHash(clip);
   } catch (err) {
     return jsonError(`Could not read clip file: ${errMessage(err)}`, 500);
   }
@@ -73,7 +73,7 @@ export async function POST(req: Request): Promise<Response> {
       summaries.push({ ...result.summary, cached: wasCached });
     }
 
-    return Response.json({ summaries, estCostThisRun, spentTotal: getSpend() });
+    return Response.json({ summaries, estCostThisRun, spentTotal: await getSpend() });
   } catch (err) {
     return jsonError(errMessage(err), 500);
   }

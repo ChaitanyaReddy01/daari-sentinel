@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 
+import { clipVideoUrl } from '@/lib/clip-urls';
 import { formatCount } from '@/lib/format';
 
 interface PreppedClip {
@@ -666,7 +667,7 @@ export default function LabPage() {
               <video
                 key={clip}
                 ref={videoRef}
-                src={`/clips/blurred/${encodeURIComponent(clip)}.mp4`}
+                src={clipVideoUrl(clip)}
                 controls
                 playsInline
                 className="block h-auto w-full"

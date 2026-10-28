@@ -1,7 +1,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { assertLiveCalls, readSnapshotJson } from './snapshot';
+import { ledgerAppend } from './ledger';
+import { checkRateLimit } from './ratelimit';
+import { assertLiveCalls, readSnapshotJson, writeCacheFile } from './snapshot';
 
 /**
  * Server-only Places API (New) client: details + nearby search.
@@ -10,7 +12,6 @@ import { assertLiveCalls, readSnapshotJson } from './snapshot';
 
 const NEARBY_URL = 'https://places.googleapis.com/v1/places:searchNearby';
 const CACHE_DIR = path.join(process.cwd(), 'data', 'cache', 'places');
-const LEDGER_PATH = path.join(process.cwd(), 'data', 'ledger.jsonl');
 
 export interface NearbyStop {
   id: string;
@@ -27,18 +28,14 @@ function serverKey(): string {
   return key;
 }
 
-function appendPlacesLedger(what: 'details' | 'nearby'): void {
-  fs.mkdirSync(path.dirname(LEDGER_PATH), { recursive: true });
-  fs.appendFileSync(
-    LEDGER_PATH,
-    JSON.stringify({
-      ts: new Date().toISOString(),
-      model: 'places-api',
-      kind: 'places',
-      what,
-      estUSD: 0,
-    }) + '\n',
-  );
+async function appendPlacesLedger(what: 'details' | 'nearby'): Promise<void> {
+  await ledgerAppend({
+    ts: new Date().toISOString(),
+    model: 'places-api',
+    kind: 'places',
+    what,
+    estUSD: 0,
+  });
 }
 
 async function googleFetch(url: string, init: RequestInit, what: string): Promise<unknown> {
@@ -58,7 +55,11 @@ async function googleFetch(url: string, init: RequestInit, what: string): Promis
 }
 
 /** Gas stations, rest stops and coffee near a point. Cached per location. */
-export async function searchStops(lat: number, lng: number): Promise<NearbyStop[]> {
+export async function searchStops(
+  lat: number,
+  lng: number,
+  clientIp = 'unknown',
+): Promise<NearbyStop[]> {
   const key = `${lat.toFixed(3)}_${lng.toFixed(3)}`;
   const cachePath = path.join(CACHE_DIR, `nearby-${key}.json`);
   try {
@@ -69,6 +70,7 @@ export async function searchStops(lat: number, lng: number): Promise<NearbyStop[
     if (snap && Array.isArray(snap)) return snap;
   }
   assertLiveCalls(`Places nearby ${key}`);
+  await checkRateLimit('places', clientIp);
   const data = (await googleFetch(
     NEARBY_URL,
     {
@@ -112,8 +114,7 @@ export async function searchStops(lat: number, lng: number): Promise<NearbyStop[
       types: Array.isArray(p.types) ? p.types.filter((t): t is string => typeof t === 'string') : [],
     });
   }
-  fs.mkdirSync(CACHE_DIR, { recursive: true });
-  fs.writeFileSync(cachePath, JSON.stringify(out));
-  appendPlacesLedger('nearby');
+  writeCacheFile(cachePath, JSON.stringify(out));
+  await appendPlacesLedger('nearby');
   return out;
 }

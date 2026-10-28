@@ -3,7 +3,7 @@ import path from 'node:path';
 
 import { hashFile } from './clips';
 import { meta } from './meta';
-import { assertLiveCalls, readSnapshotJson } from './snapshot';
+import { assertLiveCalls, isProduction, readSnapshotJson, writeCacheFile } from './snapshot';
 
 const CACHE_PATH = path.join(process.cwd(), 'data', 'cache', 'files.json');
 
@@ -26,6 +26,11 @@ function loadCache(): Record<string, string> {
  * Never uploads the same bytes twice: a cached file id is returned as-is.
  */
 export async function uploadClip(localPath: string): Promise<string> {
+  if (isProduction() && !fs.existsSync(localPath)) {
+    // Production ships no video files: uploads are impossible, so this is a
+    // snapshot miss, not a crash.
+    assertLiveCalls(`Upload of ${localPath}`);
+  }
   const hash = hashFile(localPath);
   const cache = loadCache();
   const cached = cache[hash];
@@ -38,7 +43,6 @@ export async function uploadClip(localPath: string): Promise<string> {
   });
 
   cache[hash] = file.id;
-  fs.mkdirSync(path.dirname(CACHE_PATH), { recursive: true });
-  fs.writeFileSync(CACHE_PATH, JSON.stringify(cache, null, 2));
+  writeCacheFile(CACHE_PATH, JSON.stringify(cache, null, 2));
   return file.id;
 }

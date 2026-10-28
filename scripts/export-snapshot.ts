@@ -83,6 +83,27 @@ async function main(): Promise<void> {
   take(copyTree(path.join(CACHE_DIR, 'places'), path.join(SNAP_DIR, 'places')), 'places');
   take(copyFile('files.json'), 'files.json');
 
+  // Clip metadata + content hashes: production has no video files, so the
+  // server resolves clip info and cache keys from this file instead.
+  const { hashFile, listPreppedClips, preppedVideoPath } = await import(
+    '../src/lib/clips'
+  );
+  const clips = listPreppedClips().map((c) => ({
+    name: c.name,
+    frameCount: c.frameCount,
+    fps: c.fps,
+    width: c.width,
+    height: c.height,
+    sizeBytes: c.sizeBytes,
+    sha256: hashFile(preppedVideoPath(c.name)),
+  }));
+  const clipsPath = path.join(SNAP_DIR, 'clips.json');
+  fs.writeFileSync(clipsPath, JSON.stringify(clips));
+  take(
+    { files: 1, bytes: fs.statSync(clipsPath).size },
+    `clips.json (${clips.length} clips)`,
+  );
+
   const mb = bytes / 1024 / 1024;
   console.log(`export-snapshot: total: ${files} files, ${mb.toFixed(1)} MB in data/snapshot/.`);
   if (mb > SIZE_WARN_MB) {

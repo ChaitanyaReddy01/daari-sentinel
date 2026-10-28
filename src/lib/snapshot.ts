@@ -14,9 +14,30 @@ export function snapshotDir(): string {
   return path.join(process.cwd(), 'data', 'snapshot');
 }
 
-/** Live API calls happen only with LIVE_CALLS=true. */
+/** True on Vercel (production): read-only, snapshot-only, Redis ledger. */
+export function isProduction(): boolean {
+  return process.env.VERCEL === '1';
+}
+
+/** Local filesystem writes are forbidden on Vercel. */
+export function canWriteFiles(): boolean {
+  return !isProduction();
+}
+
+/**
+ * Live API calls happen only with LIVE_CALLS=true. LIVE_CALLS_ENABLED=false
+ * is a kill switch that blocks everything, instantly.
+ */
 export function liveCallsAllowed(): boolean {
+  if (process.env.LIVE_CALLS_ENABLED === 'false') return false;
   return process.env.LIVE_CALLS === 'true';
+}
+
+/** Write a cache file locally; silently skip on Vercel (read-only). */
+export function writeCacheFile(filePath: string, data: string): void {
+  if (!canWriteFiles()) return;
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, data);
 }
 
 /** Throw a clear "not in snapshot" error unless live calls are allowed. */
@@ -36,4 +57,29 @@ export function readSnapshotJson<T>(relPath: string): T | null {
   } catch {
     return null;
   }
+}
+
+export interface SnapshotClipMeta {
+  name: string;
+  frameCount: number;
+  fps: number;
+  width: number;
+  height: number;
+  sizeBytes: number;
+  sha256: string;
+}
+
+let clipsCache: SnapshotClipMeta[] | null = null;
+
+/** Clip metadata + content hashes (production has no video files). */
+export function snapshotClipList(): SnapshotClipMeta[] {
+  if (!clipsCache) {
+    const parsed = readSnapshotJson<SnapshotClipMeta[]>('clips.json');
+    clipsCache = Array.isArray(parsed) ? parsed : [];
+  }
+  return clipsCache;
+}
+
+export function snapshotClipMeta(clip: string): SnapshotClipMeta | null {
+  return snapshotClipList().find((c) => c.name === clip) ?? null;
 }

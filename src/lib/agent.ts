@@ -9,7 +9,7 @@ import {
   WONDER_REASONING_EFFORT,
   verdictCostUSD,
 } from './config';
-import { hashFile, loadPreppedClip, preppedVideoPath } from './clips';
+import { loadPreppedClip, preppedHash } from './clips';
 import { readSamCache } from './sam-cache';
 import type { SamCachedResult } from './sam';
 import { readVerdictCache } from './verdict-cache';
@@ -25,7 +25,8 @@ import {
   type AgentReportInput,
 } from './agent-guard';
 import { planningDefault, type PlanningDefault } from './clearance';
-import { assertLiveCalls, readSnapshotJson } from './snapshot';
+import { ledgerAppend } from './ledger';
+import { assertLiveCalls, readSnapshotJson, writeCacheFile } from './snapshot';
 
 /**
  * Muse Wonder incident agent (Step 5). Server-only: reads caches from disk
@@ -110,7 +111,6 @@ export interface StoredAssessment {
 }
 
 const AGENT_DIR = path.join(process.cwd(), 'data', 'cache', 'agent');
-const LEDGER_PATH = path.join(process.cwd(), 'data', 'ledger.jsonl');
 
 export function agentCacheKeyFor(input: AssessIncidentInput): string {
   // Round minutes to 0.1 (6 s): demo fire times land a frame or two past
@@ -170,7 +170,7 @@ export function buildReportInput(args: {
   if (!clipInfo) {
     throw new Error(`Unknown clip "${clip}". Prep it first: npx tsx scripts/prep-clip.ts ${clip}`);
   }
-  const hash = hashFile(preppedVideoPath(clip));
+  const hash = preppedHash(clip);
   const verdictHit = readVerdictCache(hash);
   if (!verdictHit) {
     throw new Error(`No cached verdict for "${clip}" (run the batch first; agent uses cached data only).`);
@@ -201,7 +201,7 @@ export function estimateAgentCostUSD(numReports: number): number {
   return verdictCostUSD(MUSE_WONDER_MODEL, 800 + Math.max(1, numReports) * 1200, 600, 0);
 }
 
-function appendAgentLedger(entry: {
+async function appendAgentLedger(entry: {
   ts: string;
   model: string;
   hash: string;
@@ -211,9 +211,8 @@ function appendAgentLedger(entry: {
   cachedInputTokens: number;
   estUSD: number;
   source: 'muse-wonder' | 'fallback table';
-}): void {
-  fs.mkdirSync(path.dirname(LEDGER_PATH), { recursive: true });
-  fs.appendFileSync(LEDGER_PATH, JSON.stringify(entry) + '\n');
+}): Promise<void> {
+  await ledgerAppend(entry as unknown as Record<string, unknown>);
 }
 
 function isFormatError(err: unknown): boolean {
@@ -249,7 +248,7 @@ function num(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : 0;
 }
 
-function storeAndLedger(args: {
+async function storeAndLedger(args: {
   key: string;
   assessment: AgentAssessment;
   source: 'muse-wonder' | 'fallback table';
@@ -257,7 +256,7 @@ function storeAndLedger(args: {
   inputTokens: number;
   outputTokens: number;
   cachedInputTokens: number;
-}): StoredAssessment {
+}): Promise<StoredAssessment> {
   const estUSD = verdictCostUSD(
     MUSE_WONDER_MODEL,
     args.inputTokens,
@@ -276,9 +275,8 @@ function storeAndLedger(args: {
     estUSD,
     agentVersion: AGENT_VERSION,
   };
-  fs.mkdirSync(path.dirname(agentCachePath(args.key)), { recursive: true });
-  fs.writeFileSync(agentCachePath(args.key), JSON.stringify(stored));
-  appendAgentLedger({
+  writeCacheFile(agentCachePath(args.key), JSON.stringify(stored));
+  await appendAgentLedger({
     ts: new Date().toISOString(),
     model: MUSE_WONDER_MODEL,
     hash: args.key,
@@ -340,7 +338,7 @@ export async function assessIncident(
       reason: 'MODEL_API_KEY is not set',
     });
     return {
-      result: storeAndLedger({
+      result: await storeAndLedger({
         key,
         assessment: fb.assessment,
         source: 'fallback table',
@@ -442,7 +440,7 @@ export async function assessIncident(
           reason: `Wonder call failed: ${reason}`,
         });
         return {
-          result: storeAndLedger({
+          result: await storeAndLedger({
             key,
             assessment: fb.assessment,
             source: 'fallback table',
@@ -466,7 +464,7 @@ export async function assessIncident(
           reason: `Wonder call failed: ${reason}`,
         });
         return {
-          result: storeAndLedger({
+          result: await storeAndLedger({
             key,
             assessment: fb.assessment,
             source: 'fallback table',
@@ -484,7 +482,7 @@ export async function assessIncident(
   const first = validate(firstText);
   if (first.ok) {
     return {
-      result: storeAndLedger({
+      result: await storeAndLedger({
         key,
         assessment: first.assessment,
         source: 'muse-wonder',
@@ -512,7 +510,7 @@ export async function assessIncident(
       reason: `Wonder retry failed: ${reason}; first error: ${first.error}`,
     });
     return {
-      result: storeAndLedger({
+      result: await storeAndLedger({
         key,
         assessment: fb.assessment,
         source: 'fallback table',
@@ -527,7 +525,7 @@ export async function assessIncident(
   const second = validate(secondText);
   if (second.ok) {
     return {
-      result: storeAndLedger({
+      result: await storeAndLedger({
         key,
         assessment: second.assessment,
         source: 'muse-wonder',
@@ -546,7 +544,7 @@ export async function assessIncident(
     reason: `Wonder output invalid after retry: ${second.error}`,
   });
   return {
-    result: storeAndLedger({
+    result: await storeAndLedger({
       key,
       assessment: fb.assessment,
       source: 'fallback table',
