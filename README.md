@@ -2,6 +2,8 @@
 
 Road cameras — dashcams in cars and roadside traffic cameras — become an early incident warning: cameras see the crash, and drivers behind get a stay / reroute / wait decision before they reach it.
 
+**Live demo: [https://daari-sentinel.vercel.app](https://daari-sentinel.vercel.app)**
+
 ![Warning card on /sim](docs/sim-warning.png)
 
 ## What it does
