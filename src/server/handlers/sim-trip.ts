@@ -3,9 +3,6 @@ import { z } from 'zod';
 import { errMessage, jsonError } from '@/lib/clips';
 import { getTrip, type TripRequest } from '@/lib/trip';
 
-export const runtime = 'nodejs';
-export const dynamic = 'force-dynamic';
-
 const LatLng = z.object({ lat: z.number().min(-90).max(90), lng: z.number().min(-180).max(180) });
 const Address = z.object({ address: z.string().min(1).max(200) });
 const PlaceRef = z.object({ placeId: z.string().min(1).max(200) });

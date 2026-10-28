@@ -1,8 +1,5 @@
 import { listPreppedClips } from '@/lib/clips';
 
-export const runtime = 'nodejs';
-export const dynamic = 'force-dynamic';
-
 export async function GET(): Promise<Response> {
   let spentTotal = 0;
   let concepts: string[] = [];

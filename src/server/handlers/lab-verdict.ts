@@ -1,3 +1,6 @@
+import fs from 'node:fs';
+import path from 'node:path';
+
 import { z } from 'zod';
 
 import {
@@ -10,33 +13,34 @@ import {
 } from '@/lib/clips';
 import { MUSE_SPARK_MODEL } from '@/lib/config';
 import { readSamCache } from '@/lib/sam-cache';
+import type { SamCachedResult } from '@/lib/sam';
+import { buildChecks } from '@/lib/checks';
 import { estimateVerdictCost, readVerdictCache } from '@/lib/verdict-cache';
-
-export const runtime = 'nodejs';
-export const dynamic = 'force-dynamic';
 
 const Query = z.object({ clip: ClipName });
 const Body = z.object({ clip: ClipName });
 
-// CONCEPTS duplicated from sam.ts (key-free): the cost probe must not need
-// MODEL_API_KEY. Keep in sync with src/lib/sam.ts.
-const CONCEPTS = [
-  'car',
-  'truck',
+const CHECK_CONCEPTS = [
   'police car',
   'ambulance',
   'fire truck',
   'tow truck',
+  'car',
+  'truck',
   'person',
-  'traffic cone',
-  'construction vehicle',
-  'road barrier',
-  'safety vest',
 ];
-const PRICE_PER_1K_FRAMES = 0.2;
-const MIN_BILLABLE_FRAMES = 50;
 
-/** Key-free cost probe: what would reporting this clip bill? */
+/** True when any SAM result is cached for this clip hash. */
+function hasSamResults(hash: string): boolean {
+  try {
+    const dir = path.join(process.cwd(), 'data', 'cache', 'sam', hash);
+    return fs.readdirSync(dir).some((f) => f.endsWith('.json'));
+  } catch {
+    return false;
+  }
+}
+
+/** Key-free probe: is this clip's verdict cached, and what would it cost? */
 export async function GET(req: Request): Promise<Response> {
   const url = new URL(req.url);
   const parsed = Query.safeParse({ clip: url.searchParams.get('clip') });
@@ -60,21 +64,14 @@ export async function GET(req: Request): Promise<Response> {
     return jsonError(`Could not read clip file: ${errMessage(err)}`, 500);
   }
 
-  const uncachedSam = CONCEPTS.filter((c) => !readSamCache(hash, c));
-  const samEst =
-    (uncachedSam.length * Math.max(MIN_BILLABLE_FRAMES, clipInfo.frameCount) * PRICE_PER_1K_FRAMES) /
-    1000;
-  const verdictCached = readVerdictCache(hash) !== null;
-  const verdictEst = verdictCached ? 0 : estimateVerdictCost(MUSE_SPARK_MODEL, clipInfo.frameCount);
+  const cached = readVerdictCache(hash) !== null;
   return Response.json({
-    samCached: CONCEPTS.length - uncachedSam.length,
-    samTotal: CONCEPTS.length,
-    verdictCached,
-    estimateUSD: samEst + verdictEst,
+    cached,
+    estimateUSD: cached ? 0 : estimateVerdictCost(MUSE_SPARK_MODEL, clipInfo.frameCount),
+    hasSamResults: hasSamResults(hash),
   });
 }
 
-/** Run the full SAM + verdict pipeline for one clip (cached parts are $0). */
 export async function POST(req: Request): Promise<Response> {
   let body: unknown;
   try {
@@ -86,6 +83,7 @@ export async function POST(req: Request): Promise<Response> {
   if (!parsed.success) {
     return jsonError(`Invalid request: ${parsed.error.issues.map((i) => i.message).join('; ')}`, 400);
   }
+
   const { clip } = parsed.data;
 
   const clipInfo = loadPreppedClip(clip);
@@ -106,36 +104,22 @@ export async function POST(req: Request): Promise<Response> {
   try {
     // Dynamic imports: keyed modules throw at load when MODEL_API_KEY is
     // unset, and we want that as a JSON error, not a crashed route.
-    const { uploadClip } = await import('@/lib/files');
-    const { CONCEPTS: concepts, estimateCostUSD, getSpend, runSam } = await import('@/lib/sam');
     const { runVerdict } = await import('@/lib/spark');
+    const { getSpend } = await import('@/lib/sam');
 
-    const fileId = await uploadClip(preppedVideoPath(clip));
-    const meta = {
-      frameCount: clipInfo.frameCount,
-      fps: clipInfo.fps,
-      width: clipInfo.width,
-      height: clipInfo.height,
-    };
-    let estCostThisRun = 0;
-    let allCached = true;
-    for (const concept of concepts) {
-      const wasCached = readSamCache(hash, concept) !== null;
-      await runSam({ fileId, hash, concept, meta });
-      if (!wasCached) {
-        allCached = false;
-        estCostThisRun += estimateCostUSD(clipInfo.frameCount);
-      }
+    const { result, cached } = await runVerdict({ clip });
+
+    const sam: Record<string, SamCachedResult | null> = {};
+    for (const concept of CHECK_CONCEPTS) {
+      sam[concept] = readSamCache(hash, concept);
     }
-    const { result, cached: verdictCached } = await runVerdict({ clip });
-    if (!verdictCached) {
-      allCached = false;
-      estCostThisRun += result.estUSD;
-    }
+    const checks = buildChecks({ verdict: result.verdict, sam, fps: clipInfo.fps });
+
     return Response.json({
       verdict: result.verdict,
-      cached: allCached,
-      estCostThisRun,
+      checks,
+      cached,
+      estCostThisRun: cached ? 0 : result.estUSD,
       spentTotal: getSpend(),
     });
   } catch (err) {

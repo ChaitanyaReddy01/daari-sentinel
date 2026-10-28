@@ -6,9 +6,6 @@ import { z } from 'zod';
 
 import { ClipName, blurredVideoPath, errMessage, hashFile, jsonError, loadPreppedClip } from '@/lib/clips';
 
-export const runtime = 'nodejs';
-export const dynamic = 'force-dynamic';
-
 const Query = z.object({ clip: ClipName, second: z.coerce.number().min(0) });
 
 const THUMBS_DIR = path.join(process.cwd(), 'data', 'cache', 'thumbs');

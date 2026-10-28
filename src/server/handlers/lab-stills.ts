@@ -10,9 +10,6 @@ import {
   hashFile,
 } from '@/lib/clips';
 
-export const runtime = 'nodejs';
-export const dynamic = 'force-dynamic';
-
 const Query = z.object({ clip: ClipName, concept: ConceptName });
 
 const STILLS_CONCEPTS = ['car', 'truck', 'person'];

@@ -10,9 +10,6 @@ import {
   hashFile,
 } from '@/lib/clips';
 
-export const runtime = 'nodejs';
-export const dynamic = 'force-dynamic';
-
 const Body = z.object({
   clip: ClipName,
   concepts: z.array(ConceptName).min(1).max(20).optional(),

@@ -11,9 +11,6 @@ import {
 } from '@/lib/clips';
 import { readSamCache } from '@/lib/sam-cache';
 
-export const runtime = 'nodejs';
-export const dynamic = 'force-dynamic';
-
 const Query = z.object({ clip: ClipName, concept: ConceptName });
 
 export async function GET(req: Request): Promise<Response> {

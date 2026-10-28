@@ -3,9 +3,6 @@ import { z } from 'zod';
 import { AgentAssessmentSchema } from '@/lib/agent-guard';
 import { ClipName, errMessage, jsonError } from '@/lib/clips';
 
-export const runtime = 'nodejs';
-export const dynamic = 'force-dynamic';
-
 const ReportRef = z.object({
   reportId: z.string().min(1).max(40),
   clip: ClipName,
