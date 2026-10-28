@@ -21,7 +21,6 @@ import {
   haversineMeters,
   nearestOnRoute,
   pointAt,
-  projectEta,
   speedInZones,
   stageSpeedMps,
   type RouteGeom,
@@ -35,7 +34,6 @@ import {
   decideByLabel,
   findDivergence,
   minDistanceToRoute,
-  offRouteCandidates,
   projectToSWithSpeeds,
   remainingWithSpeeds,
   rerouteDelayMin,
@@ -55,6 +53,12 @@ const WARN_LATERAL_METERS = 300;
 const SPEEDS = [1, 10, 30] as const;
 const ROUTE_BLUE = '#1a73e8';
 const NEW_HAVEN = { lat: 41.3083, lng: -72.9279 };
+/** Suggest a switch only past this saving (or 10% of remaining, larger wins). */
+const SWITCH_SAVE_MIN = 3;
+/** After picking a plan, hold it this long before offering a switch back. */
+const PLAN_HOLD_SEC = 120;
+/** …unless a new incident or stage change saves this much by switching. */
+const HOLD_BREAK_MIN = 5;
 
 interface SimVerdict {
   incident: boolean;
@@ -125,6 +129,17 @@ interface DriveRoute {
   speeds: StepSpeed[];
 }
 
+/** The route the driver is committed to. Starts as the trip's main route. */
+interface RoutePlan {
+  routeId: string;
+  idx: number;
+  data: TripRouteData;
+  geom: RouteGeom;
+  speeds: StepSpeed[];
+  label: string;
+  chosenAt: number;
+}
+
 interface Hud {
   simTime: number;
   distLeft: number;
@@ -143,6 +158,7 @@ interface RerouteOption {
   viaName?: string;
   decideLabel?: string;
   decideMin?: number;
+  fewestDelays?: boolean;
 }
 
 interface StopOption {
@@ -165,6 +181,10 @@ interface WarningOptions {
   reroute: RerouteOption;
   stop: StopOption | null;
   fastest: 'stay' | 'reroute' | 'stop';
+  switchNote: string | null;
+  stayTotalMin: number;
+  rerouteTotalMin: number | null;
+  stopTotalMin: number | null;
 }
 
 interface Choice {
@@ -380,7 +400,8 @@ export default function SimPage() {
   const [follow, setFollow] = useState(true);
   const [currentIdx, setCurrentIdx] = useState(0);
   const [choice, setChoice] = useState<Choice | null>(null);
-  const [warningId, setWarningId] = useState<number | null>(null);
+  const [warnedIds, setWarnedIds] = useState<number[]>([]);
+  const [activeIdx, setActiveIdxState] = useState(0);
   const [options, setOptions] = useState<WarningOptions | null>(null);
   const [returnOffer, setReturnOffer] = useState<{
     convAltS: number;
@@ -429,7 +450,14 @@ export default function SimPage() {
   const currentIdxRef = useRef(0);
   const pendingSwitchRef = useRef<{ altIdx: number; divergeS: number; altS: number } | null>(null);
   const stopPlanRef = useRef<{ s: number; resumeAt: number; name: string } | null>(null);
-  const warningIdRef = useRef<number | null>(null);
+  const warnedIdsRef = useRef<number[]>([]);
+  const activeIdxRef = useRef(0);
+  const planChosenAtRef = useRef(0);
+  const candRef = useRef<{ key: string; idxs: number[] } | null>(null);
+  const lastPickRef = useRef<{ at: number; planIdx: number } | null>(null);
+  const lastChangeRef = useRef(0);
+  const returnSaveRef = useRef<number | null>(null);
+  const returnThresholdRef = useRef<number | null>(null);
   const optionsTokenRef = useRef(0);
   const demoRef = useRef({ active: false, fired: 0, incidentId: null as number | null });
   const demoChainRef = useRef<Promise<void>>(Promise.resolve());
@@ -462,6 +490,116 @@ export default function SimPage() {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [evidencePlay]);
+
+  // Scripted-verification hook (multi-incident scenarios). Read-only except
+  // for drop/followUp, which run the same cached paths as the UI.
+  useEffect(() => {
+    (window as unknown as { __sim?: unknown }).__sim = {
+      drop: async (routeIdx: number, s: number, clip: string) => {
+        const g = tripRef.current?.routes[routeIdx]?.geom;
+        if (!g) return null;
+        const sc = Math.min(Math.max(0, s), g.length - 1);
+        const pt = pointAt(g, sc);
+        const verdict = await runReport(clip);
+        if (!verdict) return null;
+        return createIncident(
+          { s: sc, lat: pt.lat, lng: pt.lng, routeIdx },
+          clip,
+          verdict,
+          simTimeRef.current,
+          'same',
+        );
+      },
+      followUp: async (id: number, clip: string) => {
+        const verdict = await runReport(clip);
+        if (!verdict) return false;
+        await applyFollowup(id, clip, verdict, simTimeRef.current, 'same');
+        return true;
+      },
+      recompute: () => {
+        void refreshCandidates().then(() => computeOptions());
+      },
+      stopDemo: () => {
+        demoRef.current.active = false;
+        setDemoOn(false);
+      },
+      distToRoutes: (lat: number, lng: number) => {
+        const trip = tripRef.current;
+        if (!trip) return [];
+        return trip.routes.map((r, idx) => ({
+          idx,
+          d: minDistanceToRoute(r.geom, { lat, lng }),
+        }));
+      },
+      pointAt: (routeIdx: number, s: number) => {
+        const g = tripRef.current?.routes[routeIdx]?.geom;
+        if (!g) return null;
+        return pointAt(g, Math.min(Math.max(0, s), g.length - 1));
+      },
+      state: () => ({
+        simTime: simTimeRef.current,
+        activeIdx: activeIdxRef.current,
+        activeLabel: activePlan()?.label ?? null,
+        carS: activeS(),
+        youS: yourCarRef.current.s,
+        currentIdx: currentIdxRef.current,
+        warnedIds: [...warnedIdsRef.current],
+        incidents: incidentsRef.current.map((i) => ({
+          id: i.id,
+          active: i.active,
+          stage: i.stage,
+          type: i.type,
+          affected: affectedRoutes(i),
+        })),
+        routes: (tripRef.current?.routes ?? []).map((r, idx) => ({
+          idx,
+          label: routeName(r.data.description, r.data.steps),
+          length: r.geom.length,
+        })),
+        cands: (candRef.current?.idxs ?? []).map((idx) => {
+          const r = tripRef.current?.routes[idx];
+          if (!r) return { idx, missing: true };
+          const sc = scoreRoute(r, 0, simTimeRef.current);
+          const hits = activeIncidents()
+            .filter(
+              (inc) =>
+                incidentSOn(inc, r.geom) > 50 &&
+                minDistanceToRoute(r.geom, { lat: inc.lat, lng: inc.lng }) <=
+                  WARN_LATERAL_METERS,
+            )
+            .map((i) => i.id);
+          return {
+            idx,
+            label: routeName(r.data.description, r.data.steps),
+            totalMin: Math.round(sc.total / 6) / 10,
+            driveMin: Math.round(sc.drive / 6) / 10,
+            hits,
+          };
+        }),
+        options: options
+          ? {
+              fastest: options.fastest,
+              stay: `STAY on ${options.mainName}`,
+              jamDelayMin: options.jamDelayMin,
+              rerouteVia: options.reroute.available ? options.reroute.viaName : null,
+              fewestDelays: !!options.reroute.fewestDelays,
+              reason: options.reroute.reason ?? null,
+              switchNote: options.switchNote,
+              stayTotalMin: options.stayTotalMin,
+              rerouteTotalMin: options.rerouteTotalMin,
+              stopTotalMin: options.stopTotalMin,
+            }
+          : null,
+        choice: choice?.kind ?? null,
+        returnOffer: returnOffer ? { saveMin: returnOffer.saveMin } : null,
+        returnSave: returnSaveRef.current,
+        returnThreshold: returnThresholdRef.current,
+      }),
+    };
+    return () => {
+      delete (window as unknown as { __sim?: unknown }).__sim;
+    };
+  });
 
   useEffect(() => {
     try {
@@ -508,8 +646,11 @@ export default function SimPage() {
     incidentsRef.current = incidents;
   }, [incidents]);
   useEffect(() => {
-    warningIdRef.current = warningId;
-  }, [warningId]);
+    warnedIdsRef.current = warnedIds;
+  }, [warnedIds]);
+  useEffect(() => {
+    activeIdxRef.current = activeIdx;
+  }, [activeIdx]);
 
   const yourGeom = (): RouteGeom | null => {
     const trip = tripRef.current;
@@ -522,6 +663,54 @@ export default function SimPage() {
     if (!trip) return [];
     return trip.routes[currentIdxRef.current]?.speeds ?? [];
   };
+
+  /** The committed route plan. Warnings, ETAs, and options use this. */
+  const activePlan = (): RoutePlan | null => {
+    const trip = tripRef.current;
+    const route = trip?.routes[activeIdxRef.current];
+    if (!trip || !route) return null;
+    return {
+      routeId: `route-${activeIdxRef.current}`,
+      idx: activeIdxRef.current,
+      data: route.data,
+      geom: route.geom,
+      speeds: route.speeds,
+      label: routeName(route.data.description, route.data.steps),
+      chosenAt: planChosenAtRef.current,
+    };
+  };
+
+  const setActivePlan = (idx: number) => {
+    activeIdxRef.current = idx;
+    planChosenAtRef.current = simTimeRef.current;
+    setActiveIdxState(idx);
+  };
+
+  /** Car position measured on the active plan (pre-switch: mapped via divergence). */
+  const activeS = (): number => {
+    const pend = pendingSwitchRef.current;
+    const youS = yourCarRef.current.s;
+    if (!pend) return youS;
+    return Math.max(0, pend.altS + (youS - pend.divergeS));
+  };
+
+  const incidentSOn = (incident: SimIncident, geom: RouteGeom): number =>
+    nearestOnRoute(geom, { lat: incident.lat, lng: incident.lng }).s;
+
+  /** Route indexes (into trip.routes) passing within 300 m of the incident. */
+  const affectedRoutes = (incident: SimIncident): number[] => {
+    const trip = tripRef.current;
+    if (!trip) return [];
+    const pt = { lat: incident.lat, lng: incident.lng };
+    const out: number[] = [];
+    trip.routes.forEach((r, idx) => {
+      if (minDistanceToRoute(r.geom, pt) <= WARN_LATERAL_METERS) out.push(idx);
+    });
+    return out;
+  };
+
+  const activeIncidents = (): SimIncident[] =>
+    incidentsRef.current.filter((i) => i.active && i.stage !== 'cleared');
 
   // Geolocate once for the plan screen; fall back to New Haven.
   useEffect(() => {
@@ -632,11 +821,19 @@ export default function SimPage() {
     simTimeRef.current = 0;
     pendingSwitchRef.current = null;
     stopPlanRef.current = null;
+    activeIdxRef.current = 0;
+    planChosenAtRef.current = 0;
+    candRef.current = null;
+    lastPickRef.current = null;
+    lastChangeRef.current = 0;
+    returnSaveRef.current = null;
+    returnThresholdRef.current = null;
     setCurrentIdx(0);
+    setActiveIdxState(0);
     setIncidents([]);
     setSelectedId(null);
     setChoice(null);
-    setWarningId(null);
+    setWarnedIds([]);
     setOptions(null);
     setReturnOffer(null);
     setPlaying(true);
@@ -976,24 +1173,96 @@ export default function SimPage() {
     }
   };
 
-  const zonesForRoute = (routeIdx: number): SlowZone[] =>
-    incidentsRef.current
-      .filter((i) => i.active && i.routeIdx === routeIdx)
-      .flatMap((i) => {
-        const mph = stageSpeedMps(i.stage);
-        if (mph === null) return [];
-        return [{ s0: i.s - SLOW_AHEAD_METERS, s1: i.s, mps: mph * MPH_TO_MPS }];
-      });
-
-  // ETA basis shared with the option cards: step speeds through zones,
-  // exactly how the cars below drive, so arrival times match.
-  const legSec = (fromS: number, toS: number, zones: SlowZone[]): number => {
-    return projectToSWithSpeeds(fromS, toS, zones, yourSpeeds(), YOUR_BASE_MPS);
+  const zonesForRoute = (routeIdx: number): SlowZone[] => {
+    const g = tripRef.current?.routes[routeIdx]?.geom;
+    if (!g) return [];
+    return activeIncidents().flatMap((i) => {
+      if (minDistanceToRoute(g, { lat: i.lat, lng: i.lng }) > WARN_LATERAL_METERS) return [];
+      const s = incidentSOn(i, g);
+      const mph = stageSpeedMps(i.stage);
+      if (mph === null) return [];
+      return [{ s0: s - SLOW_AHEAD_METERS, s1: s, mps: mph * MPH_TO_MPS }];
+    });
   };
 
-  const freeLegSec = (fromS: number): number => {
-    const g = yourGeom();
-    return g ? remainingWithSpeeds(fromS, yourSpeeds(), YOUR_BASE_MPS, g.length) : 0;
+  // ---- multi-incident route scoring (seconds) ----
+  interface RouteScore {
+    drive: number;
+    lo: number;
+    mid: number;
+    hi: number;
+    total: number;
+    totalLo: number;
+    totalHi: number;
+  }
+
+  /** An incident's clearance range remaining now, else the planning table. */
+  const incidentRangeAt = (
+    inc: SimIncident,
+    simNow: number,
+  ): { lo: number; likely: number; hi: number } => {
+    const latest = inc.assessments[inc.assessments.length - 1] ?? null;
+    if (latest) {
+      const rem = displayClearance(
+        latest.assessment,
+        (simNow - latest.atT) / 60,
+        inc.reports.some((r) => !r.incident),
+      );
+      return { lo: rem.lowMin, likely: rem.likelyMin, hi: rem.highMin };
+    }
+    const clear = clearanceEstimate(inc.type, inc.stage, inc.severity);
+    if (clear.loMin === null || clear.likelyMin === null || clear.hiMin === null) {
+      return { lo: 0, likely: 0, hi: 0 };
+    }
+    return { lo: clear.loMin, likely: clear.likelyMin, hi: clear.hiMin };
+  };
+
+  /**
+   * Score a route from fromS: free-flow drive time plus per-incident delays
+   * in reach order, each evaluated at its arrival time after earlier delays.
+   * startOffsetSec shifts arrivals when scoring a leg reached later (e.g. a
+   * reroute's remainder after the drive to the divergence point).
+   */
+  const scoreRoute = (
+    route: { geom: RouteGeom; speeds: StepSpeed[] },
+    fromS: number,
+    simNow: number,
+    startOffsetSec = 0,
+  ): RouteScore => {
+    const base = YOUR_BASE_MPS;
+    const drive = remainingWithSpeeds(fromS, route.speeds, base, route.geom.length);
+    const onRoute = activeIncidents()
+      .map((inc) => ({ inc, s: incidentSOn(inc, route.geom) }))
+      .filter(
+        (o) =>
+          o.s > fromS + 50 &&
+          minDistanceToRoute(route.geom, { lat: o.inc.lat, lng: o.inc.lng }) <=
+            WARN_LATERAL_METERS,
+      )
+      .sort((a, b) => a.s - b.s);
+    let acc = 0;
+    let lo = 0;
+    let mid = 0;
+    let hi = 0;
+    for (const { inc, s } of onRoute) {
+      const freeTo = projectToSWithSpeeds(fromS, s, [], route.speeds, base);
+      const arrivalMin = (startOffsetSec + freeTo + acc) / 60;
+      const c = incidentRangeAt(inc, simNow);
+      const ageMin = Math.max(0, (simNow - inc.reports[0].t) / 60 + arrivalMin);
+      const r = stayDelayRange(
+        arrivalMin,
+        c.lo,
+        c.likely,
+        c.hi,
+        inc.lanesBlocked ?? 'unknown',
+        ageMin,
+      );
+      lo += r.lo * 60;
+      mid += r.mid * 60;
+      hi += r.hi * 60;
+      acc += r.mid * 60;
+    }
+    return { drive, lo, mid, hi, total: drive + mid, totalLo: drive + lo, totalHi: drive + hi };
   };
 
   // Sim loop: advance traffic on the sim clock, redraw the car canvas.
@@ -1037,7 +1306,7 @@ export default function SimPage() {
         const you = yourCarRef.current;
         if (!you.arrived) {
           const stop = stopPlanRef.current;
-          if (stop && you.s >= stop.s) {
+          if (stop && activeS() >= stop.s) {
             if (simTimeRef.current >= stop.resumeAt) stopPlanRef.current = null;
           } else {
             const base = speedAtSpeeds(yourSpeeds(), you.s, YOUR_BASE_MPS);
@@ -1075,25 +1344,28 @@ export default function SimPage() {
         uiAcc = 0;
         zonesRef.current = zonesForRoute(currentIdxRef.current);
         const you = yourCarRef.current;
-        const g = yourGeom();
-        if (g) {
-          const proj = projectEta(you.s, zonesRef.current, YOUR_BASE_MPS, g.length);
-          let etaS = legSec(you.s, g.length, zonesRef.current);
+        const plan = activePlan();
+        if (plan) {
+          const aS = activeS();
+          const score = scoreRoute(plan, aS, simTimeRef.current);
+          let etaS = score.total;
           const stop = stopPlanRef.current;
           if (stop && !you.arrived) {
-            if (you.s >= stop.s) {
-              etaS = Math.max(0, stop.resumeAt - simTimeRef.current) + freeLegSec(you.s);
+            if (aS >= stop.s) {
+              etaS =
+                Math.max(0, stop.resumeAt - simTimeRef.current) +
+                remainingWithSpeeds(aS, plan.speeds, YOUR_BASE_MPS, plan.geom.length);
             } else {
-              const driveT = legSec(you.s, stop.s, zonesRef.current);
+              const driveT = projectToSWithSpeeds(aS, stop.s, [], plan.speeds, YOUR_BASE_MPS);
               etaS =
                 driveT +
                 Math.max(0, stop.resumeAt - (simTimeRef.current + driveT)) +
-                freeLegSec(stop.s);
+                remainingWithSpeeds(stop.s, plan.speeds, YOUR_BASE_MPS, plan.geom.length);
             }
           }
           setHud({
             simTime: simTimeRef.current,
-            distLeft: proj.milesLeft,
+            distLeft: Math.max(0, (plan.geom.length - aS) / METERS_PER_MILE),
             eta: you.arrived ? 'Arrived' : formatEta(simTimeRef.current, etaS),
             arrived: you.arrived,
           });
@@ -1106,14 +1378,14 @@ export default function SimPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase]);
 
-  // Pins: the warned incident gets its type color; everything else is small gray.
+  // Pins: warned incidents get type colors; everything else is small gray.
   useEffect(() => {
     const google = googleRef.current;
     const map = mapRef2.current;
     if (!google || !map || mapStatus !== 'ready') return;
     for (const m of markersRef.current) m.setMap(null);
     markersRef.current = incidents.map((i) => {
-      const warned = i.id === warningId;
+      const warned = warnedIds.includes(i.id);
       const st = TYPE_PIN[i.type] ?? TYPE_PIN.unknown;
       const marker = new google.maps.Marker({
         position: { lat: i.lat, lng: i.lng },
@@ -1132,7 +1404,7 @@ export default function SimPage() {
       marker.addListener('click', () => setSelectedId(i.id));
       return marker;
     });
-  }, [incidents, selectedId, warningId, mapStatus]);
+  }, [incidents, selectedId, warnedIds, mapStatus]);
 
   const closestCarId = (lat: number, lng: number, dir?: 1 | -1): number => {
     const traffic = trafficGeomRef.current;
@@ -1183,6 +1455,60 @@ export default function SimPage() {
     }
   };
 
+  /** Routes from the car's current position, keyed by rounded pos + dest + incidents. */
+  const refreshCandidates = async (): Promise<number[]> => {
+    const trip = tripRef.current;
+    const destReq = destReqRef.current;
+    const geom = yourGeom();
+    if (!trip || !destReq || !geom) return candRef.current?.idxs ?? [];
+    const pos = pointAt(geom, yourCarRef.current.s);
+    const rlat = Math.round(pos.lat * 1000) / 1000;
+    const rlng = Math.round(pos.lng * 1000) / 1000;
+    const key = `${rlat},${rlng}|${JSON.stringify(destReq)}|${activeIncidents()
+      .map((i) => i.id)
+      .sort((a, b) => a - b)
+      .join(',')}`;
+    if (candRef.current?.key === key) return candRef.current.idxs;
+    try {
+      const datas = await fetchTrip({ lat: rlat, lng: rlng }, destReq);
+      const idxs: number[] = [];
+      for (const data of datas) {
+        const dup = trip.routes.findIndex(
+          (r) => r.data.encodedPolyline === data.encodedPolyline,
+        );
+        if (dup >= 0) {
+          idxs.push(dup);
+          continue;
+        }
+        const g = buildRouteGeom(decodePolyline(data.encodedPolyline));
+        trip.routes.push({
+          data,
+          geom: g,
+          speeds: buildStepSpeeds(data.steps, g.length, YOUR_BASE_MPS),
+        });
+        idxs.push(trip.routes.length - 1);
+      }
+      candRef.current = { key, idxs };
+      return idxs;
+    } catch {
+      return candRef.current?.idxs ?? [];
+    }
+  };
+
+  /** True when a candidate is basically the same road as the plan. */
+  const overlapsPlan = (candGeom: RouteGeom, planGeom: RouteGeom): boolean => {
+    const n = candGeom.points.length;
+    if (n === 0) return false;
+    const stride = Math.max(1, Math.floor(n / 40));
+    let near = 0;
+    let total = 0;
+    for (let i = 0; i < n; i += stride) {
+      total += 1;
+      if (minDistanceToRoute(planGeom, candGeom.points[i]) <= 100) near += 1;
+    }
+    return total > 0 && near / total > 0.8;
+  };
+
   const createIncident = async (
     point: { s: number; lat: number; lng: number; routeIdx: number },
     clip: string,
@@ -1231,7 +1557,13 @@ export default function SimPage() {
       type: verdict.type,
     };
     setIncidents((prev) => [...prev, inc]);
+    incidentsRef.current = [...incidentsRef.current, inc];
     setSelectedId(id);
+    lastChangeRef.current = t;
+    // New incidents change alternative scoring even when they are not warned.
+    void refreshCandidates().then(() => {
+      if (warnedIdsRef.current.length > 0) computeOptions();
+    });
     return id;
   };
 
@@ -1279,20 +1611,23 @@ export default function SimPage() {
       responders: verdict.responders,
     };
     setIncidents((list) => list.map((i) => (i.id === incidentId ? next : i)));
+    incidentsRef.current = incidentsRef.current.map((i) => (i.id === incidentId ? next : i));
     setSelectedId(incidentId);
     if (cleared) {
       handleCleared(next);
       return;
     }
-    if (warningIdRef.current === incidentId) {
-      if (assessed && next.stage !== prev.stage) {
+    if (next.stage !== prev.stage) lastChangeRef.current = t;
+    if (warnedIdsRef.current.length > 0) {
+      const warnedSelf = warnedIdsRef.current.includes(incidentId);
+      if (assessed && warnedSelf && next.stage !== prev.stage) {
         const c = assessed.assessment.clearance;
         const range = `clears in ${Math.round(c.lowMin)}–${Math.round(c.highMin)} min`;
         alert(
           `Updated: ${pretty(next.stage)}, ${range}`,
           `Updated. ${pretty(next.stage)}, ${range}.`,
         );
-      } else if (!assessed && next.stage !== prev.stage) {
+      } else if (!assessed && warnedSelf && next.stage !== prev.stage) {
         const clear = clearanceEstimate(next.type, next.stage, next.severity);
         const range =
           clear.loMin !== null && clear.hiMin !== null
@@ -1303,275 +1638,276 @@ export default function SimPage() {
           `Updated. ${pretty(next.stage)}, ${range}.`,
         );
       }
-      void computeOptions(next);
+      void refreshCandidates().then(() => computeOptions());
     }
   };
 
   const handleCleared = (incident: SimIncident) => {
-    if (warningIdRef.current === incident.id) {
-      setWarningId(null);
-      setOptions(null);
-    }
+    lastChangeRef.current = simTimeRef.current;
+    warnedIdsRef.current = warnedIdsRef.current.filter((id) => id !== incident.id);
+    setWarnedIds(warnedIdsRef.current);
+    setOptions(null);
     setChoice(null);
     alert('Road clear', 'Road clear.');
+    // Re-score: if the original route is now faster by the threshold, and no
+    // warning is showing, offer the way back (scored with live incidents).
     const trip = tripRef.current;
     const curIdx = currentIdxRef.current;
-    if (!trip || curIdx === 0) return;
-    // Offer the way back only if the original route is faster from here.
+    returnSaveRef.current = null;
+    returnThresholdRef.current = null;
+    if (!trip || curIdx === 0) {
+      void refreshCandidates().then(() => computeOptions());
+      return;
+    }
     const cur = trip.routes[curIdx];
     const orig = trip.routes[0];
     const youS = yourCarRef.current.s;
+    const simNow = simTimeRef.current;
+    // Closest approach back to the original road ahead of the car.
     let conv: { altS: number; origS: number } | null = null;
+    let convD = Infinity;
     for (let i = 0; i < cur.geom.points.length; i++) {
       const s = cur.geom.cum[i];
       if (s <= youS) continue;
-      if (minDistanceToRoute(orig.geom, cur.geom.points[i]) > 50) continue;
-      conv = { altS: s, origS: nearestOnRoute(orig.geom, cur.geom.points[i]).s };
-      break;
+      const d = minDistanceToRoute(orig.geom, cur.geom.points[i]);
+      if (d < convD) {
+        convD = d;
+        conv = { altS: s, origS: nearestOnRoute(orig.geom, cur.geom.points[i]).s };
+      }
     }
+    if (convD > WARN_LATERAL_METERS) conv = null;
+    void refreshCandidates().then(() => computeOptions());
     if (!conv) return;
-    const altRemain = remainingWithSpeeds(youS, cur.speeds, YOUR_BASE_MPS, cur.geom.length);
-    const origRemain =
-      projectToSWithSpeeds(youS, conv.altS, [], cur.speeds, YOUR_BASE_MPS) +
-      projectToSWithSpeeds(conv.origS, orig.geom.length, zonesForRoute(0), orig.speeds, YOUR_BASE_MPS);
-    if (origRemain + 60 < altRemain) {
-      setReturnOffer({ convAltS: conv.altS, origS: conv.origS, saveMin: (altRemain - origRemain) / 60 });
+    const planRoute = trip.routes[activeIdxRef.current] ?? cur;
+    const stayScore = scoreRoute(planRoute, activeS(), simNow);
+    const toConv = projectToSWithSpeeds(youS, conv.altS, [], cur.speeds, YOUR_BASE_MPS);
+    const backScore = scoreRoute(orig, conv.origS, simNow, toConv);
+    const saveMin = (stayScore.total - (toConv + backScore.total)) / 60;
+    const thresholdMin = Math.max(SWITCH_SAVE_MIN, (stayScore.total / 60) * 0.1);
+    returnSaveRef.current = saveMin;
+    returnThresholdRef.current = thresholdMin;
+    if (saveMin >= thresholdMin) {
+      setReturnOffer({ convAltS: conv.altS, origS: conv.origS, saveMin });
     }
   };
 
   const evalWarning = () => {
-    const g = yourGeom();
-    if (!g) return;
-    const youS = yourCarRef.current.s;
-    let best: SimIncident | null = null;
-    for (const i of incidentsRef.current) {
-      if (!i.active || i.stage === 'cleared' || i.routeIdx !== currentIdxRef.current) continue;
-      if (minDistanceToRoute(g, { lat: i.lat, lng: i.lng }) > WARN_LATERAL_METERS) continue;
-      if (i.s <= youS) continue;
-      if (!best || i.s < best.s) best = i;
-    }
-    const id = best ? best.id : null;
-    if (id === warningIdRef.current) return;
-    if (best) {
-      setWarningId(id);
-      setChoice(null);
+    const plan = activePlan();
+    if (!plan) return;
+    const aS = activeS();
+    const ahead = activeIncidents()
+      .map((i) => ({ i, s: incidentSOn(i, plan.geom) }))
+      .filter(
+        (o) =>
+          o.s > aS + 1 &&
+          minDistanceToRoute(plan.geom, { lat: o.i.lat, lng: o.i.lng }) <= WARN_LATERAL_METERS,
+      )
+      .sort((a, b) => a.s - b.s)
+      .map((o) => o.i);
+    const ids = ahead.map((i) => i.id);
+    const prev = warnedIdsRef.current;
+    if (ids.length === prev.length && ids.every((id, k) => id === prev[k])) return;
+    const fresh = ahead.filter((i) => !prev.includes(i.id));
+    warnedIdsRef.current = ids;
+    setWarnedIds(ids);
+    if (fresh.length > 0) {
       setReturnOffer(null);
-      alert(`Traffic alert: ${best.summary}`, `Traffic alert. ${best.summary}`);
+      alert(`Traffic alert: ${fresh[0].summary}`, `Traffic alert. ${fresh[0].summary}`);
       // Prefetch: reroute geometry, stops, and switch data load now, so the
       // option buttons never fetch on click.
-      void computeOptions(best);
-    } else {
-      setWarningId(null);
+      void refreshCandidates().then(() => computeOptions());
+    } else if (ids.length === 0) {
       setOptions(null);
       if (!pendingSwitchRef.current) setChoice(null);
+    } else {
+      void computeOptions();
     }
   };
 
-  const computeOptions = async (incident: SimIncident) => {
+  const computeOptions = async () => {
     const token = ++optionsTokenRef.current;
     const trip = tripRef.current;
-    const geom = yourGeom();
-    if (!trip || !geom) return;
-    const youS = yourCarRef.current.s;
+    const plan = activePlan();
+    if (!trip || !plan) return;
+    const warned = warnedIdsRef.current
+      .map((id) => incidentsRef.current.find((i) => i.id === id))
+      .filter((i): i is SimIncident => !!i && i.active && i.stage !== 'cleared');
+    if (warned.length === 0) return;
     const simNow = simTimeRef.current;
     const base = YOUR_BASE_MPS;
-    const L = geom.length;
-    const curIdx = currentIdxRef.current;
-    const curData = trip.routes[curIdx].data;
-    const curSpeeds = trip.routes[curIdx].speeds;
-    const mainName = routeName(curData.description, curData.steps);
-    const mainRemainSec = remainingWithSpeeds(youS, curSpeeds, base, L);
-    const zones = zonesForRoute(curIdx);
-    const lanes = incident.lanesBlocked ?? 'unknown';
-    const ageMin = Math.max(0, (simNow - incident.reports[0].t) / 60);
-    const tMin = projectToSWithSpeeds(youS, incident.s, zones, curSpeeds, base) / 60;
+    const aS = activeS();
+    const zones = zonesForRoute(plan.idx);
+
+    // STAY = the active plan's score: total delay across all incidents on it.
+    const stay = scoreRoute(plan, aS, simNow);
+    const jamDelayMin = stay.mid / 60;
+    const jamLoMin = stay.lo / 60;
+    const jamHiMin = stay.hi / 60;
+    const stayArrival = formatEta(simNow, stay.total);
+    const stayLoClock = formatEta(simNow, stay.totalLo);
+    const stayHiClock = formatEta(simNow, stay.totalHi);
+    const mainName = plan.label;
+    let fastest: 'stay' | 'reroute' | 'stop' = 'stay';
+    let bestS = stay.total;
+    let switchNote: string | null = null;
+
+    // Nearest warned incident on the plan anchors divergence + decide-by.
+    const withS = warned
+      .map((i) => ({ i, s: incidentSOn(i, plan.geom) }))
+      .sort((a, b) => a.s - b.s);
+    const nS = withS[0].s;
+    const tMin = projectToSWithSpeeds(aS, nS, zones, plan.speeds, base) / 60;
     const timeToIncidentSec = tMin * 60;
 
-    // Agent clearance range (remaining), else the fallback table.
-    const latestAssessment = incident.assessments[incident.assessments.length - 1] ?? null;
-    const hasClearedReport = incident.reports.some((r) => !r.incident);
-    let cLo: number;
-    let cLikely: number;
-    let cHigh: number;
-    if (latestAssessment) {
-      const remaining = displayClearance(
-        latestAssessment.assessment,
-        (simNow - latestAssessment.atT) / 60,
-        hasClearedReport,
-      );
-      cLo = remaining.lowMin;
-      cLikely = remaining.likelyMin;
-      cHigh = remaining.highMin;
-    } else {
-      const clear = clearanceEstimate(incident.type, incident.stage, incident.severity);
-      if (clear.loMin === null || clear.likelyMin === null || clear.hiMin === null) {
-        const freeS = remainingWithSpeeds(youS, curSpeeds, base, L);
-        const stayMidSec = projectToSWithSpeeds(youS, L, zones, curSpeeds, base);
-        const jamDelayMin = Math.max(0, (stayMidSec - freeS) / 60);
-        if (token !== optionsTokenRef.current) return;
-        setOptions({
-          stayArrival: formatEta(simNow, stayMidSec),
-          stayLoClock: formatEta(simNow, stayMidSec),
-          stayHiClock: formatEta(simNow, stayMidSec),
-          jamDelayMin,
-          jamLoMin: jamDelayMin,
-          jamHiMin: jamDelayMin,
-          mainName,
-          reroute: { available: false, reason: 'No avoiding route found.' },
-          stop: null,
-          fastest: 'stay',
-        });
-        return;
-      }
-      cLo = clear.loMin;
-      cLikely = clear.likelyMin;
-      cHigh = clear.hiMin;
-    }
-
-    // STAY: agent clearance-based wait, likelyMin headline.
-    const range = stayDelayRange(tMin, cLo, cLikely, cHigh, lanes, ageMin);
-    const jamDelayMin = range.mid;
-    const jamLoMin = range.lo;
-    const jamHiMin = range.hi;
-    const stayMidSec = mainRemainSec + range.mid * 60;
-    const stayArrival = formatEta(simNow, stayMidSec);
-    const stayLoClock = formatEta(simNow, mainRemainSec + range.lo * 60);
-    const stayHiClock = formatEta(simNow, mainRemainSec + range.hi * 60);
-    let fastest: 'stay' | 'reroute' | 'stop' = 'stay';
-    let bestS = stayMidSec;
-    const incidentPt = { lat: incident.lat, lng: incident.lng };
-
-    // REROUTE: fastest alternative that avoids the incident, else a fresh
-    // waypoint route from the current position. Costed at step speeds.
-    const rerouteCost = (
-      altSpeeds: StepSpeed[],
-      altLen: number,
-      divergeS: number,
-      altS: number,
-    ): { toDivergeSec: number; altRemainSec: number; totalSec: number } => {
-      const toDivergeSec = projectToSWithSpeeds(youS, divergeS, zones, curSpeeds, base);
-      const altRemainSec = remainingWithSpeeds(altS, altSpeeds, base, altLen);
-      return { toDivergeSec, altRemainSec, totalSec: toDivergeSec + altRemainSec };
-    };
-    let reroute: RerouteOption = { available: false, reason: 'No avoiding route found.' };
-    let bestAlt: { altIdx: number; divergeS: number; altS: number; totalSec: number } | null = null;
-    for (let idx = 0; idx < trip.routes.length; idx++) {
-      if (idx === curIdx) continue;
-      const alt = trip.routes[idx];
-      if (minDistanceToRoute(alt.geom, incidentPt) <= WARN_LATERAL_METERS) continue;
-      const div = findDivergence(geom, alt.geom.points, incident.s, 50);
-      if (!div || div.s <= youS) continue;
-      const cost = rerouteCost(alt.speeds, alt.geom.length, div.s, div.altS);
-      if (!bestAlt || cost.totalSec < bestAlt.totalSec) {
-        bestAlt = { altIdx: idx, divergeS: div.s, altS: div.altS, totalSec: cost.totalSec };
-      }
-    }
-    if (!bestAlt) {
-      const destReq = destReqRef.current;
-      if (destReq) {
-        const pos = pointAt(geom, youS);
-        for (const via of offRouteCandidates(geom, incident.s, 2000)) {
-          try {
-            const routes = await fetchTrip({ lat: pos.lat, lng: pos.lng }, destReq, via);
-            const data = routes[0];
-            const g = buildRouteGeom(decodePolyline(data.encodedPolyline));
-            if (minDistanceToRoute(g, incidentPt) <= WARN_LATERAL_METERS) continue;
-            const speeds = buildStepSpeeds(data.steps, g.length, base);
-            trip.routes.push({ data, geom: g, speeds });
-            const div = findDivergence(geom, g.points, incident.s, 50);
-            if (!div || div.s <= youS) continue;
-            const cost = rerouteCost(speeds, g.length, div.s, div.altS);
-            bestAlt = {
-              altIdx: trip.routes.length - 1,
-              divergeS: div.s,
-              altS: div.altS,
-              totalSec: cost.totalSec,
-            };
-            break;
-          } catch {
-            // Try the other side.
-          }
-        }
-      }
-    }
-    // Decide-by guard: the point must sit before the incident and arrive
-    // sooner than the incident. Otherwise retry the last divergence before
-    // the incident; if none, rerouting is impossible from here.
+    // REROUTE: score candidates from the divergence point. Prefer one that
+    // avoids every active incident; otherwise take the lowest total and say
+    // so ("fewest delays"). The pool is prefetched from-position routes plus
+    // the trip's own alternatives, so a usable road is always considered.
+    const candIdxs = await refreshCandidates();
+    if (token !== optionsTokenRef.current) return;
+    const poolIdxs = Array.from(
+      new Set([...candIdxs, ...trip.routes.map((_, i) => i)]),
+    ).filter((i) => i !== plan.idx);
+    const actives = activeIncidents();
     const NO_EXIT = 'No exit before the incident: reroute isn\u2019t possible from here';
-    if (bestAlt) {
-      const checkAlt = (cand: { altIdx: number; divergeS: number; altS: number }) => {
-        const alt = trip.routes[cand.altIdx];
-        const cost = rerouteCost(alt.speeds, alt.geom.length, cand.divergeS, cand.altS);
-        const ok = cand.divergeS < incident.s && cost.toDivergeSec < timeToIncidentSec;
-        return { cost, ok };
-      };
-      let use = bestAlt;
-      let checked = checkAlt(use);
-      if (!checked.ok) {
-        const altGeom = trip.routes[use.altIdx].geom;
-        const div2 = findDivergence(geom, altGeom.points, Math.min(incident.s, use.divergeS), 50);
-        if (div2 && div2.s > youS && div2.s < incident.s) {
-          use = { altIdx: use.altIdx, divergeS: div2.s, altS: div2.altS, totalSec: 0 };
-          checked = checkAlt(use);
-          use.totalSec = checked.cost.totalSec;
+    let reroute: RerouteOption = { available: false, reason: 'No avoiding route found.' };
+    let bestAlt: {
+      altIdx: number;
+      divergeS: number;
+      altS: number;
+      totalSec: number;
+      toDivSec: number;
+      altDriveSec: number;
+      avoids: boolean;
+    } | null = null;
+    let sawExitFailure = false;
+    for (const idx of poolIdxs) {
+      const route = trip.routes[idx];
+      if (!route || overlapsPlan(route.geom, plan.geom)) continue;
+      const div = findDivergence(plan.geom, route.geom.points, nS, 50);
+      if (!div || div.s <= aS) continue;
+      let use = { divergeS: div.s, altS: div.altS };
+      let toDiv = projectToSWithSpeeds(aS, use.divergeS, zones, plan.speeds, base);
+      if (!(use.divergeS < nS && toDiv < timeToIncidentSec)) {
+        const div2 = findDivergence(
+          plan.geom,
+          route.geom.points,
+          Math.min(nS, use.divergeS),
+          50,
+        );
+        if (div2 && div2.s > aS && div2.s < nS) {
+          use = { divergeS: div2.s, altS: div2.altS };
+          toDiv = projectToSWithSpeeds(aS, use.divergeS, zones, plan.speeds, base);
         }
       }
-      if (checked.ok) {
-        const altData = trip.routes[use.altIdx].data;
-        const decideLabel =
-          decideByLabel(altData.steps, use.altS) ??
-          `in ${fmtMi(Math.max(0, use.divergeS - youS))}`;
-        reroute = {
-          available: true,
-          arrivalClock: formatEta(simNow, checked.cost.totalSec),
-          diffMin: rerouteDelayMin(checked.cost.toDivergeSec, checked.cost.altRemainSec, mainRemainSec),
-          altIdx: use.altIdx,
-          divergeS: use.divergeS,
-          altS: use.altS,
-          viaName: routeName(altData.description, altData.steps),
-          decideLabel,
-          decideMin: checked.cost.toDivergeSec / 60,
-        };
-        if (checked.cost.totalSec < bestS) {
-          bestS = checked.cost.totalSec;
-          fastest = 'reroute';
-        }
-      } else {
-        reroute = { available: false, reason: NO_EXIT };
+      if (!(use.divergeS < nS && toDiv < timeToIncidentSec)) {
+        sawExitFailure = true;
+        continue;
+      }
+      const rem = scoreRoute(route, use.altS, simNow, toDiv);
+      const hits = actives.some(
+        (inc) =>
+          incidentSOn(inc, route.geom) > use.altS + 50 &&
+          minDistanceToRoute(route.geom, { lat: inc.lat, lng: inc.lng }) <= WARN_LATERAL_METERS,
+      );
+      const total = toDiv + rem.total;
+      const cand = {
+        altIdx: idx,
+        divergeS: use.divergeS,
+        altS: use.altS,
+        totalSec: total,
+        toDivSec: toDiv,
+        altDriveSec: rem.drive,
+        avoids: !hits,
+      };
+      if (
+        !bestAlt ||
+        (cand.avoids && !bestAlt.avoids) ||
+        (cand.avoids === bestAlt.avoids && cand.totalSec < bestAlt.totalSec)
+      ) {
+        bestAlt = cand;
+      }
+    }
+    if (!bestAlt && sawExitFailure) {
+      reroute = { available: false, reason: NO_EXIT };
+    }
+    if (bestAlt) {
+      const altData = trip.routes[bestAlt.altIdx].data;
+      const decideLabel =
+        decideByLabel(altData.steps, bestAlt.altS) ??
+        `in ${fmtMi(Math.max(0, bestAlt.divergeS - aS))}`;
+      const viaName = routeName(altData.description, altData.steps);
+      const saveSec = stay.total - bestAlt.totalSec;
+      const thresholdSec = Math.max(SWITCH_SAVE_MIN * 60, stay.total * 0.1);
+      let suggest = saveSec >= thresholdSec;
+      const pick = lastPickRef.current;
+      const changedSincePick = pick !== null && lastChangeRef.current > pick.at;
+      if (
+        pick !== null &&
+        simNow - pick.at < PLAN_HOLD_SEC &&
+        !(changedSincePick && saveSec >= HOLD_BREAK_MIN * 60)
+      ) {
+        suggest = false;
+        switchNote = `Holding your route for ${Math.max(1, Math.ceil(PLAN_HOLD_SEC - (simNow - pick.at)))} s`;
+      } else if (!suggest) {
+        switchNote =
+          saveSec < SWITCH_SAVE_MIN * 60
+            ? 'Switching saves under 3 min'
+            : `Switching saves only ${Math.round(saveSec / 60)} min`;
+      }
+      reroute = {
+        available: true,
+        arrivalClock: formatEta(simNow, bestAlt.totalSec),
+        diffMin: rerouteDelayMin(bestAlt.toDivSec, bestAlt.altDriveSec, stay.drive),
+        altIdx: bestAlt.altIdx,
+        divergeS: bestAlt.divergeS,
+        altS: bestAlt.altS,
+        viaName,
+        decideLabel,
+        decideMin: bestAlt.toDivSec / 60,
+        fewestDelays: !bestAlt.avoids,
+        reason: bestAlt.avoids
+          ? undefined
+          : `Every route has incidents; ${viaName} has the shortest delay`,
+      };
+      if (suggest && bestAlt.totalSec < bestS) {
+        bestS = bestAlt.totalSec;
+        fastest = 'reroute';
       }
     }
 
-    // STOP: nearest gas/rest/coffee between you and the decision point.
-    // Hidden once the incident clears before you arrive: nothing to wait out.
+    // STOP: nearest gas/rest/coffee between you and the decision point, using
+    // the total plan delay. Hidden when the nearest incident clears first.
     let stop: StopOption | null = null;
-    if (tMin < cHigh) {
+    const nearestHigh = incidentRangeAt(withS[0].i, simNow).hi;
+    if (tMin < nearestHigh) {
       const farBound =
-        reroute.available && reroute.divergeS !== undefined ? reroute.divergeS : incident.s;
-      if (farBound > youS + 50) {
-        const mid = pointAt(geom, (youS + farBound) / 2);
+        reroute.available && reroute.divergeS !== undefined ? reroute.divergeS : nS;
+      if (farBound > aS + 50) {
+        const mid = pointAt(plan.geom, (aS + farBound) / 2);
         try {
           const res = await fetch(`/api/sim/stops?lat=${mid.lat}&lng=${mid.lng}`);
           if (res.ok) {
             const data = (await res.json()) as {
               stops: { name: string; lat: number; lng: number }[];
             };
-            let pick: { name: string; s: number; d: number } | null = null;
+            let pickStop: { name: string; s: number; d: number } | null = null;
             for (const st of data.stops) {
-              const snap = nearestOnRoute(geom, st);
+              const snap = nearestOnRoute(plan.geom, st);
               const d = haversineMeters(snap.point, st);
-              if (d > 1000 || snap.s <= youS || snap.s >= farBound) continue;
-              if (!pick || d < pick.d) pick = { name: st.name, s: snap.s, d };
+              if (d > 1000 || snap.s <= aS || snap.s >= farBound) continue;
+              if (!pickStop || d < pickStop.d) pickStop = { name: st.name, s: snap.s, d };
             }
-            if (pick) {
-              const driveT = projectToSWithSpeeds(youS, pick.s, zones, curSpeeds, base);
-              const waitMin = Math.max(5, cLikely - tMin);
+            if (pickStop) {
+              const driveT = projectToSWithSpeeds(aS, pickStop.s, zones, plan.speeds, base);
+              const waitMin = Math.max(5, stay.mid / 60 - tMin);
               const resumeAt = simNow + driveT + waitMin * 60;
-              const arrivalS = mainRemainSec + waitMin * 60 + WAIT_RESIDUAL_MIN * 60;
+              const arrivalS = stay.drive + waitMin * 60 + WAIT_RESIDUAL_MIN * 60;
               stop = {
-                name: pick.name,
+                name: pickStop.name,
                 waitMin,
                 arrivalClock: formatEta(simNow, arrivalS),
-                stopS: pick.s,
+                stopS: pickStop.s,
                 resumeAt,
                 arrivalS,
               };
@@ -1599,18 +1935,25 @@ export default function SimPage() {
       reroute,
       stop,
       fastest,
+      switchNote,
+      stayTotalMin: stay.total / 60,
+      rerouteTotalMin: bestAlt ? bestAlt.totalSec / 60 : null,
+      stopTotalMin: stop ? stop.arrivalS / 60 : null,
     });
   };
 
   const chooseStay = () => {
-    if (warningIdRef.current === null) return;
+    if (warnedIdsRef.current.length === 0) return;
     pendingSwitchRef.current = null;
     stopPlanRef.current = null;
+    setActivePlan(currentIdxRef.current);
+    lastPickRef.current = { at: simTimeRef.current, planIdx: currentIdxRef.current };
     setChoice({
       kind: 'stay',
       label: `Stay on ${options?.mainName ?? 'route'}`,
-      incidentId: warningIdRef.current,
+      incidentId: warnedIdsRef.current[0],
     });
+    void computeOptions();
   };
 
   const chooseReroute = () => {
@@ -1620,7 +1963,7 @@ export default function SimPage() {
       o.altIdx === undefined ||
       o.divergeS === undefined ||
       o.altS === undefined ||
-      warningIdRef.current === null
+      warnedIdsRef.current.length === 0
     ) {
       return;
     }
@@ -1629,10 +1972,12 @@ export default function SimPage() {
     const t0 = performance.now();
     pendingSwitchRef.current = { altIdx: o.altIdx, divergeS: o.divergeS, altS: o.altS };
     stopPlanRef.current = null;
+    setActivePlan(o.altIdx);
+    lastPickRef.current = { at: simTimeRef.current, planIdx: o.altIdx };
     setChoice({
       kind: 'reroute',
       label: `Reroute via ${o.viaName}`,
-      incidentId: warningIdRef.current,
+      incidentId: warnedIdsRef.current[0],
     });
     if (!mutedRef.current) {
       speak(
@@ -1651,14 +1996,17 @@ export default function SimPage() {
 
   const chooseStop = () => {
     const s = options?.stop;
-    if (!s || warningIdRef.current === null) return;
+    if (!s || warnedIdsRef.current.length === 0) return;
     stopPlanRef.current = { s: s.stopS, resumeAt: s.resumeAt, name: s.name };
     pendingSwitchRef.current = null;
+    setActivePlan(currentIdxRef.current);
+    lastPickRef.current = { at: simTimeRef.current, planIdx: currentIdxRef.current };
     setChoice({
       kind: 'stop',
       label: `Wait at ${s.name} (${Math.round(s.waitMin)} min)`,
-      incidentId: warningIdRef.current,
+      incidentId: warnedIdsRef.current[0],
     });
+    void computeOptions();
   };
 
   const runDemoEvent = async (idx: number) => {
@@ -1828,13 +2176,21 @@ export default function SimPage() {
     demoAnchorRef.current = null;
     pendingSwitchRef.current = null;
     stopPlanRef.current = null;
+    activeIdxRef.current = 0;
+    planChosenAtRef.current = 0;
+    candRef.current = null;
+    lastPickRef.current = null;
+    lastChangeRef.current = 0;
+    returnSaveRef.current = null;
+    returnThresholdRef.current = null;
     nextIdRef.current = 1;
     setIncidents([]);
     setSelectedId(null);
-    setWarningId(null);
+    setWarnedIds([]);
     setOptions(null);
     setChoice(null);
     setReturnOffer(null);
+    setActiveIdxState(0);
     setCurrentIdx(0);
     setArming(false);
     setModal(null);
@@ -1851,13 +2207,20 @@ export default function SimPage() {
     if (!returnOffer) return;
     pendingSwitchRef.current = { altIdx: 0, divergeS: returnOffer.convAltS, altS: returnOffer.origS };
     stopPlanRef.current = null;
+    setActivePlan(0);
+    lastPickRef.current = { at: simTimeRef.current, planIdx: 0 };
     setChoice({ kind: 'reroute', label: 'Return to original route', incidentId: -1 });
     setReturnOffer(null);
     showToast('Returning to the original route at the merge.');
   };
 
   // ---- render ----
-  const warned = incidents.find((i) => i.id === warningId) ?? null;
+  const planRoute = tripRef.current?.routes[activeIdx] ?? null;
+  const planLabel = planRoute ? routeName(planRoute.data.description, planRoute.data.steps) : '';
+  const warnedList = warnedIds
+    .map((id) => incidents.find((i) => i.id === id))
+    .filter((i): i is SimIncident => !!i);
+  const warned = warnedList[0] ?? null;
   let warnDist = '';
   let warnTime = '';
   let warnHeadline = '';
@@ -1867,52 +2230,76 @@ export default function SimPage() {
   let warnNarrows = '';
   let warnSource: 'muse-wonder' | 'fallback table' | null = null;
   let warnUnconfirmed: string | null = null;
-  if (warned) {
-    const g = yourGeom();
-    if (g) {
-      const youS = yourCarRef.current.s;
-      warnDist = fmtMi(Math.max(0, warned.s - youS));
-      warnTime = fmtMin(
-        projectToSWithSpeeds(youS, warned.s, zonesRef.current, yourSpeeds(), YOUR_BASE_MPS),
+  const warnEntries: { id: number; name: string; dist: string; about: string }[] = [];
+  if (warned && planRoute) {
+    const aS = activeS();
+    for (const w of warnedList) {
+      const s = incidentSOn(w, planRoute.geom);
+      const latestW = w.assessments[w.assessments.length - 1] ?? null;
+      const about = latestW
+        ? (() => {
+            const rem = displayClearance(
+              latestW.assessment,
+              (hud.simTime - latestW.atT) / 60,
+              w.reports.some((r) => !r.incident),
+            );
+            return rem.unconfirmed ? 'about 5 min (unconfirmed)' : `about ${rem.likelyMin} min`;
+          })()
+        : 'estimating…';
+      warnEntries.push({
+        id: w.id,
+        name: w.summary,
+        dist: fmtMi(Math.max(0, s - aS)),
+        about,
+      });
+    }
+    const wS = incidentSOn(warned, planRoute.geom);
+    warnDist = fmtMi(Math.max(0, wS - aS));
+    warnTime = fmtMin(
+      projectToSWithSpeeds(aS, wS, zonesRef.current, planRoute.speeds, YOUR_BASE_MPS),
+    );
+    const latest = warned.assessments[warned.assessments.length - 1] ?? null;
+    if (latest) {
+      const remaining = displayClearance(
+        latest.assessment,
+        (hud.simTime - latest.atT) / 60,
+        warned.reports.some((r) => !r.incident),
       );
-      const latest = warned.assessments[warned.assessments.length - 1] ?? null;
-      if (latest) {
-        const remaining = displayClearance(
-          latest.assessment,
-          (hud.simTime - latest.atT) / 60,
-          warned.reports.some((r) => !r.incident),
-        );
-        warnSource = latest.source;
-        if (remaining.unconfirmed && remaining.unconfirmedLabel) {
-          warnHeadline = 'Clears in about 5 min';
-          warnRangeLine = 'Range 0–10 min';
-          warnUnconfirmed = remaining.unconfirmedLabel;
-        } else {
-          warnHeadline = `Clears in about ${remaining.likelyMin} min`;
-          warnRangeLine = `Range ${remaining.lowMin}–${remaining.highMin} min · ${capFirst(latest.assessment.confidence)} confidence`;
-        }
-        if (latest.assessment.confidence === 'low') {
-          warnLowReason =
-            latest.assessment.uncertainties[0] ?? latest.assessment.rangeReason;
-        }
-        warnReason = latest.assessment.rangeReason;
-        warnNarrows = stripNarrowsPrefix(latest.assessment.narrowsIf);
+      warnSource = latest.source;
+      if (remaining.unconfirmed && remaining.unconfirmedLabel) {
+        warnHeadline = 'Clears in about 5 min';
+        warnRangeLine = 'Range 0–10 min';
+        warnUnconfirmed = remaining.unconfirmedLabel;
       } else {
-        const clear = clearanceEstimate(warned.type, warned.stage, warned.severity);
-        warnHeadline =
-          clear.likelyMin !== null
-            ? `Clears in about ${clear.likelyMin} min`
-            : 'Work zone, ongoing';
-        warnRangeLine =
-          clear.loMin !== null && clear.hiMin !== null
-            ? `Range ${clear.loMin}–${clear.hiMin} min`
-            : '';
+        warnHeadline = `Clears in about ${remaining.likelyMin} min`;
+        warnRangeLine = `Range ${remaining.lowMin}–${remaining.highMin} min · ${capFirst(latest.assessment.confidence)} confidence`;
       }
+      if (latest.assessment.confidence === 'low') {
+        warnLowReason =
+          latest.assessment.uncertainties[0] ?? latest.assessment.rangeReason;
+      }
+      warnReason = latest.assessment.rangeReason;
+      warnNarrows = stripNarrowsPrefix(latest.assessment.narrowsIf);
+    } else {
+      const clear = clearanceEstimate(warned.type, warned.stage, warned.severity);
+      warnHeadline =
+        clear.likelyMin !== null
+          ? `Clears in about ${clear.likelyMin} min`
+          : 'Work zone, ongoing';
+      warnRangeLine =
+        clear.loMin !== null && clear.hiMin !== null
+          ? `Range ${clear.loMin}–${clear.hiMin} min`
+          : '';
     }
   }
   const rOpt = options?.reroute;
-  const chosenKind =
-    choice && choice.incidentId === warningId ? choice.kind : null;
+  const cardSelected =
+    pendingSwitchRef.current && choice?.kind === 'reroute'
+      ? 'reroute'
+      : choice && warnedIds.includes(choice.incidentId)
+        ? choice.kind
+        : null;
+  const chosenKind = cardSelected;
   let rerouteBanner: string | null = null;
   {
     const pend = pendingSwitchRef.current;
@@ -2088,7 +2475,7 @@ export default function SimPage() {
           <div className="absolute inset-x-2 top-2 flex flex-col gap-1">
             {warned && (
               <div className="rounded-md bg-red-700 px-3 py-2 text-sm font-semibold text-white shadow-lg">
-                Traffic alert: {warned.summary} ({warnDist} ahead)
+                Traffic alert{warnedList.length > 1 ? ` (${warnedList.length})` : ''}: {warned.summary} ({warnDist} ahead)
               </div>
             )}
             {rerouteBanner && (
@@ -2131,6 +2518,9 @@ export default function SimPage() {
             </div>
           </div>
           <p className="mt-1 text-sm text-stone-600">
+            Your route: {planLabel || '—'}
+          </p>
+          <p className="mt-1 text-sm text-stone-600">
             {hud.arrived
               ? 'Arrived.'
               : `${hud.distLeft.toFixed(1)} mi left · ETA ${hud.eta}`}
@@ -2166,7 +2556,17 @@ export default function SimPage() {
         {warned && (
           <section className="rounded-lg border-2 border-red-600 bg-white p-3">
             <h2 className="font-bold text-red-700">Traffic alert</h2>
-            <p className="mt-1 text-sm font-semibold">{warned.summary}</p>
+            <ul className="mt-1 flex flex-col gap-1">
+              {warnEntries.map((e) => (
+                <li key={e.id} className="text-sm">
+                  <span className="font-semibold">{e.name}</span>
+                  <br />
+                  <span className="text-stone-600">
+                    {e.dist} ahead · clears in {e.about}
+                  </span>
+                </li>
+              ))}
+            </ul>
             <div className="mt-1 flex flex-wrap gap-1">
               {[pretty(warned.type), pretty(warned.stage)].map((c) => (
                 <span key={c} className="rounded bg-stone-100 px-2 py-0.5 text-xs font-semibold">
@@ -2223,7 +2623,7 @@ export default function SimPage() {
                   className={`min-h-[44px] rounded-md border p-2 text-left text-sm ${options.fastest === 'stay' ? 'border-green-600 bg-green-50' : 'border-stone-300'} ${chosenKind && chosenKind !== 'stay' ? 'opacity-50' : ''}`}
                 >
                   <span className="font-bold">
-                    STAY on {options.mainName}{' '}
+                    STAY on {options.mainName} (your current route){' '}
                     {chosenKind === 'stay' && <span className="text-blue-700">· Selected ✓</span>}
                     {options.fastest === 'stay' && <span className="text-green-700">· Fastest</span>}
                   </span>
@@ -2238,6 +2638,7 @@ export default function SimPage() {
                   >
                     <span className="font-bold">
                       REROUTE via {rOpt.viaName}{' '}
+                      {rOpt.fewestDelays && <span className="text-amber-800">· fewest delays</span>}{' '}
                       {chosenKind === 'reroute' && <span className="text-blue-700">· Selected ✓</span>}
                       {options.fastest === 'reroute' && <span className="text-green-700">· Fastest</span>}
                     </span>
@@ -2247,11 +2648,20 @@ export default function SimPage() {
                       (rOpt.diffMin > 0.5
                         ? ` (+${Math.round(rOpt.diffMin)} min detour)`
                         : ' (no detour)')}
+                    {rOpt.fewestDelays && rOpt.reason && (
+                      <>
+                        <br />
+                        <span className="text-xs text-stone-600">{rOpt.reason}</span>
+                      </>
+                    )}
                   </button>
                 ) : (
                   <p className="rounded-md bg-stone-100 p-2 text-sm">
                     Reroute: {rOpt?.reason ?? 'unavailable'}
                   </p>
+                )}
+                {options.switchNote && (
+                  <p className="text-xs text-stone-600">{options.switchNote}</p>
                 )}
                 {options.stop && (
                   <button
@@ -2273,10 +2683,10 @@ export default function SimPage() {
           </section>
         )}
 
-        {returnOffer && (
+        {returnOffer && warnedIds.length === 0 && (
           <section className="rounded-lg border border-green-600 bg-green-50 p-3">
             <p className="text-sm font-semibold">
-              Road clear — return to the original route and save ~{Math.round(returnOffer.saveMin)} min?
+              Return to {tripRef.current ? routeName(tripRef.current.routes[0].data.description, tripRef.current.routes[0].data.steps) : 'original route'} (saves {Math.round(returnOffer.saveMin)} min)
             </p>
             <div className="mt-2 flex gap-2">
               <button

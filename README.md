@@ -28,6 +28,7 @@ Commit messages before this point say 'Day 1–3'; these were build steps, all c
 | Oct 27 | Step 4d: fix map zoom with follow mode |
 | Oct 27 | Step 5: Muse Wonder incident agent with verified evidence and honest ranges |
 | Oct 27 | Step 6: calibrated clearance times, clickable evidence, instant reroute feedback |
+| Oct 27 | Step 6b: active route plans, multiple incidents, no flip-flopping |
 
 ## Meta models used
 
