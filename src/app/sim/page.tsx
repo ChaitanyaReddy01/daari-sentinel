@@ -213,6 +213,15 @@ function reportNumber(reportId: string): string {
   return m ? m[1] : reportId;
 }
 
+/** The model sometimes prefixes narrowsIf with "Narrows if" itself. */
+function stripNarrowsPrefix(s: string): string {
+  return s.replace(/^\s*narrows\s+if\s*:?\s*/i, '');
+}
+
+function capFirst(s: string): string {
+  return s.length === 0 ? s : s[0].toUpperCase() + s.slice(1);
+}
+
 async function readError(res: Response): Promise<string> {
   try {
     const data = (await res.json()) as { error?: unknown };
@@ -396,6 +405,9 @@ export default function SimPage() {
   const mapRef2 = useRef<any>(null);
   const overlayRef = useRef<any>(null);
   const routeLineRef = useRef<any>(null);
+  const altLineRef = useRef<any>(null);
+  const exitMarkerRef = useRef<any>(null);
+  const rerouteMsRef = useRef<number | null>(null);
   const markersRef = useRef<any[]>([]);
   const tripRef = useRef<{ routes: DriveRoute[]; originLabel: string; destLabel: string } | null>(null);
   const destReqRef = useRef<TripPlan['destReq'] | null>(null);
@@ -441,6 +453,15 @@ export default function SimPage() {
     const t = setTimeout(() => setToast(null), 4500);
     return () => clearTimeout(t);
   }, [toast]);
+
+  useEffect(() => {
+    if (!evidencePlay) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setEvidencePlay(null);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [evidencePlay]);
 
   useEffect(() => {
     try {
@@ -754,24 +775,90 @@ export default function SimPage() {
       if (zoomListener) googleRef.current?.maps?.event?.removeListener(zoomListener);
       if (overlay) overlay.setMap(null);
       if (routeLineRef.current) routeLineRef.current.setMap(null);
+      if (altLineRef.current) altLineRef.current.setMap(null);
+      if (exitMarkerRef.current) exitMarkerRef.current.setMap(null);
       for (const m of markersRef.current) m.setMap(null);
       markersRef.current = [];
       routeLineRef.current = null;
+      altLineRef.current = null;
+      exitMarkerRef.current = null;
       mapRef2.current = null;
       overlayRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase]);
 
-  // Current route line (blue) follows reroutes; refit only on a new trip.
+  // Route lines: blue for the current route; while a reroute is pending,
+  // the new route draws solid blue, the old one gray dashed, plus an exit
+  // marker. Runs synchronously on choice so feedback is instant.
   useEffect(() => {
     const map = mapRef2.current;
     const trip = tripRef.current;
     if (!map || !trip || mapStatus !== 'ready') return;
     const g = trip.routes[currentIdx]?.geom;
     if (!g) return;
+    const google = googleRef.current as any;
     if (routeLineRef.current) routeLineRef.current.setMap(null);
-    routeLineRef.current = new (googleRef.current as any).maps.Polyline({
+    if (altLineRef.current) {
+      altLineRef.current.setMap(null);
+      altLineRef.current = null;
+    }
+    if (exitMarkerRef.current) {
+      exitMarkerRef.current.setMap(null);
+      exitMarkerRef.current = null;
+    }
+    const pend = pendingSwitchRef.current;
+    const alt = pend && choice?.kind === 'reroute' ? trip.routes[pend.altIdx] : null;
+    if (alt && pend) {
+      routeLineRef.current = new google.maps.Polyline({
+        path: g.points,
+        strokeOpacity: 0,
+        icons: [
+          {
+            icon: {
+              path: 'M 0,-1 0,1',
+              strokeOpacity: 1,
+              strokeColor: '#9ca3af',
+              strokeWeight: 5,
+              scale: 2,
+            },
+            offset: '0',
+            repeat: '14px',
+          },
+        ],
+        zIndex: 1,
+        map,
+      });
+      altLineRef.current = new google.maps.Polyline({
+        path: alt.geom.points,
+        strokeColor: ROUTE_BLUE,
+        strokeWeight: 5,
+        strokeOpacity: 0.95,
+        zIndex: 2,
+        map,
+      });
+      const returning = choice?.incidentId === -1;
+      exitMarkerRef.current = new google.maps.Marker({
+        position: pointAt(g, pend.divergeS),
+        map,
+        title: returning ? 'Merge here' : 'Exit here',
+        label: {
+          text: returning ? 'Merge here' : 'Exit here',
+          color: '#1a73e8',
+          fontWeight: 'bold',
+        },
+        icon: {
+          path: google.maps.SymbolPath.CIRCLE,
+          scale: 8,
+          fillColor: '#1a73e8',
+          fillOpacity: 1,
+          strokeColor: '#ffffff',
+          strokeWeight: 2,
+        },
+      });
+      return;
+    }
+    routeLineRef.current = new google.maps.Polyline({
       path: g.points,
       strokeColor: ROUTE_BLUE,
       strokeWeight: 5,
@@ -780,7 +867,7 @@ export default function SimPage() {
       map,
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tripId, currentIdx]);
+  }, [tripId, currentIdx, choice, mapStatus]);
 
   const drawScene = (
     dots: HTMLCanvasElement,
@@ -1270,6 +1357,8 @@ export default function SimPage() {
       setChoice(null);
       setReturnOffer(null);
       alert(`Traffic alert: ${best.summary}`, `Traffic alert. ${best.summary}`);
+      // Prefetch: reroute geometry, stops, and switch data load now, so the
+      // option buttons never fetch on click.
       void computeOptions(best);
     } else {
       setWarningId(null);
@@ -1302,7 +1391,7 @@ export default function SimPage() {
     const latestAssessment = incident.assessments[incident.assessments.length - 1] ?? null;
     const hasClearedReport = incident.reports.some((r) => !r.incident);
     let cLo: number;
-    let cMid: number;
+    let cLikely: number;
     let cHigh: number;
     if (latestAssessment) {
       const remaining = displayClearance(
@@ -1311,11 +1400,11 @@ export default function SimPage() {
         hasClearedReport,
       );
       cLo = remaining.lowMin;
-      cMid = remaining.midMin;
+      cLikely = remaining.likelyMin;
       cHigh = remaining.highMin;
     } else {
       const clear = clearanceEstimate(incident.type, incident.stage, incident.severity);
-      if (clear.loMin === null || clear.midpointMin === null || clear.hiMin === null) {
+      if (clear.loMin === null || clear.likelyMin === null || clear.hiMin === null) {
         const freeS = remainingWithSpeeds(youS, curSpeeds, base, L);
         const stayMidSec = projectToSWithSpeeds(youS, L, zones, curSpeeds, base);
         const jamDelayMin = Math.max(0, (stayMidSec - freeS) / 60);
@@ -1335,12 +1424,12 @@ export default function SimPage() {
         return;
       }
       cLo = clear.loMin;
-      cMid = clear.midpointMin;
+      cLikely = clear.likelyMin;
       cHigh = clear.hiMin;
     }
 
-    // STAY: agent clearance-based wait, midpoint headline.
-    const range = stayDelayRange(tMin, cLo, cMid, cHigh, lanes, ageMin);
+    // STAY: agent clearance-based wait, likelyMin headline.
+    const range = stayDelayRange(tMin, cLo, cLikely, cHigh, lanes, ageMin);
     const jamDelayMin = range.mid;
     const jamLoMin = range.lo;
     const jamHiMin = range.hi;
@@ -1475,7 +1564,7 @@ export default function SimPage() {
             }
             if (pick) {
               const driveT = projectToSWithSpeeds(youS, pick.s, zones, curSpeeds, base);
-              const waitMin = Math.max(5, cMid - tMin);
+              const waitMin = Math.max(5, cLikely - tMin);
               const resumeAt = simNow + driveT + waitMin * 60;
               const arrivalS = mainRemainSec + waitMin * 60 + WAIT_RESIDUAL_MIN * 60;
               stop = {
@@ -1535,6 +1624,9 @@ export default function SimPage() {
     ) {
       return;
     }
+    // Everything below is synchronous: the route geometry was prefetched when
+    // the warning appeared, so this click makes no network request.
+    const t0 = performance.now();
     pendingSwitchRef.current = { altIdx: o.altIdx, divergeS: o.divergeS, altS: o.altS };
     stopPlanRef.current = null;
     setChoice({
@@ -1542,7 +1634,19 @@ export default function SimPage() {
       label: `Reroute via ${o.viaName}`,
       incidentId: warningIdRef.current,
     });
-    showToast(`Rerouting at ${o.decideLabel ?? 'the divergence point'}.`);
+    if (!mutedRef.current) {
+      speak(
+        `Rerouting. Exit at ${o.decideLabel ?? 'the divergence point'} in ${Math.max(1, Math.round(o.decideMin ?? 0))} minutes.`,
+      );
+    }
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => {
+        const ms = performance.now() - t0;
+        rerouteMsRef.current = ms;
+        (window as unknown as { __rerouteMs?: number }).__rerouteMs = ms;
+        console.log(`reroute visual in ${ms.toFixed(0)} ms`);
+      }),
+    );
   };
 
   const chooseStop = () => {
@@ -1756,7 +1860,9 @@ export default function SimPage() {
   const warned = incidents.find((i) => i.id === warningId) ?? null;
   let warnDist = '';
   let warnTime = '';
-  let warnClear = '';
+  let warnHeadline = '';
+  let warnRangeLine = '';
+  let warnLowReason: string | null = null;
   let warnReason = '';
   let warnNarrows = '';
   let warnSource: 'muse-wonder' | 'fallback table' | null = null;
@@ -1778,23 +1884,55 @@ export default function SimPage() {
         );
         warnSource = latest.source;
         if (remaining.unconfirmed && remaining.unconfirmedLabel) {
-          warnClear = '0–10 min';
+          warnHeadline = 'Clears in about 5 min';
+          warnRangeLine = 'Range 0–10 min';
           warnUnconfirmed = remaining.unconfirmedLabel;
         } else {
-          warnClear = `${remaining.lowMin}–${remaining.highMin} min`;
+          warnHeadline = `Clears in about ${remaining.likelyMin} min`;
+          warnRangeLine = `Range ${remaining.lowMin}–${remaining.highMin} min · ${capFirst(latest.assessment.confidence)} confidence`;
+        }
+        if (latest.assessment.confidence === 'low') {
+          warnLowReason =
+            latest.assessment.uncertainties[0] ?? latest.assessment.rangeReason;
         }
         warnReason = latest.assessment.rangeReason;
-        warnNarrows = latest.assessment.narrowsIf;
+        warnNarrows = stripNarrowsPrefix(latest.assessment.narrowsIf);
       } else {
         const clear = clearanceEstimate(warned.type, warned.stage, warned.severity);
-        warnClear =
+        warnHeadline =
+          clear.likelyMin !== null
+            ? `Clears in about ${clear.likelyMin} min`
+            : 'Work zone, ongoing';
+        warnRangeLine =
           clear.loMin !== null && clear.hiMin !== null
-            ? `${clear.loMin}–${clear.hiMin} min (estimate)`
-            : 'work zone, ongoing';
+            ? `Range ${clear.loMin}–${clear.hiMin} min`
+            : '';
       }
     }
   }
   const rOpt = options?.reroute;
+  const chosenKind =
+    choice && choice.incidentId === warningId ? choice.kind : null;
+  let rerouteBanner: string | null = null;
+  {
+    const pend = pendingSwitchRef.current;
+    const g = tripRef.current?.routes[currentIdxRef.current]?.geom ?? null;
+    if (chosenKind === 'reroute' && pend && rOpt?.available && rOpt.decideLabel && g) {
+      const nMin = Math.max(
+        1,
+        Math.round(
+          projectToSWithSpeeds(
+            yourCarRef.current.s,
+            pend.divergeS,
+            zonesRef.current,
+            yourSpeeds(),
+            YOUR_BASE_MPS,
+          ) / 60,
+        ),
+      );
+      rerouteBanner = `Rerouting: exit at ${rOpt.decideLabel} in ${nMin} min`;
+    }
+  }
 
   if (phase === 'plan') {
     return (
@@ -1923,6 +2061,9 @@ export default function SimPage() {
           Scripted scenario: New Haven → Times Square with four incident reports near Exit 27,
           Bridgeport.
         </p>
+        <footer className="text-xs text-stone-500">
+          Demo uses stock footage as stand-ins for one incident.
+        </footer>
       </main>
     );
   }
@@ -1943,9 +2084,18 @@ export default function SimPage() {
               : `Map failed: ${mapError}`}
           </p>
         )}
-        {warned && (
-          <div className="absolute inset-x-2 top-2 rounded-md bg-red-700 px-3 py-2 text-sm font-semibold text-white shadow-lg">
-            Traffic alert: {warned.summary} ({warnDist} ahead)
+        {(warned || rerouteBanner) && (
+          <div className="absolute inset-x-2 top-2 flex flex-col gap-1">
+            {warned && (
+              <div className="rounded-md bg-red-700 px-3 py-2 text-sm font-semibold text-white shadow-lg">
+                Traffic alert: {warned.summary} ({warnDist} ahead)
+              </div>
+            )}
+            {rerouteBanner && (
+              <div className="rounded-md bg-blue-700 px-3 py-2 text-sm font-semibold text-white shadow-lg">
+                {rerouteBanner}
+              </div>
+            )}
           </div>
         )}
         {arming && (
@@ -2034,7 +2184,11 @@ export default function SimPage() {
             <p className="mt-2 text-sm">
               {warnDist} ahead · about {warnTime} away
             </p>
-            <p className="text-sm font-semibold">Clears in {warnClear}</p>
+            <p className="text-sm font-semibold">{warnHeadline}</p>
+            {warnRangeLine && <p className="text-xs text-stone-600">{warnRangeLine}</p>}
+            {warnLowReason && (
+              <p className="text-xs font-semibold text-amber-800">Low confidence: {warnLowReason}</p>
+            )}
             {warnUnconfirmed && (
               <p className="text-sm text-amber-800">{warnUnconfirmed}</p>
             )}
@@ -2066,10 +2220,11 @@ export default function SimPage() {
                 <button
                   type="button"
                   onClick={chooseStay}
-                  className={`min-h-[44px] rounded-md border p-2 text-left text-sm ${options.fastest === 'stay' ? 'border-green-600 bg-green-50' : 'border-stone-300'}`}
+                  className={`min-h-[44px] rounded-md border p-2 text-left text-sm ${options.fastest === 'stay' ? 'border-green-600 bg-green-50' : 'border-stone-300'} ${chosenKind && chosenKind !== 'stay' ? 'opacity-50' : ''}`}
                 >
                   <span className="font-bold">
                     STAY on {options.mainName}{' '}
+                    {chosenKind === 'stay' && <span className="text-blue-700">· Selected ✓</span>}
                     {options.fastest === 'stay' && <span className="text-green-700">· Fastest</span>}
                   </span>
                   <br />
@@ -2079,10 +2234,11 @@ export default function SimPage() {
                   <button
                     type="button"
                     onClick={chooseReroute}
-                    className={`min-h-[44px] rounded-md border p-2 text-left text-sm ${options.fastest === 'reroute' ? 'border-green-600 bg-green-50' : 'border-stone-300'}`}
+                    className={`min-h-[44px] rounded-md border p-2 text-left text-sm ${options.fastest === 'reroute' ? 'border-green-600 bg-green-50' : 'border-stone-300'} ${chosenKind && chosenKind !== 'reroute' ? 'opacity-50' : ''}`}
                   >
                     <span className="font-bold">
                       REROUTE via {rOpt.viaName}{' '}
+                      {chosenKind === 'reroute' && <span className="text-blue-700">· Selected ✓</span>}
                       {options.fastest === 'reroute' && <span className="text-green-700">· Fastest</span>}
                     </span>
                     <br />
@@ -2101,10 +2257,11 @@ export default function SimPage() {
                   <button
                     type="button"
                     onClick={chooseStop}
-                    className={`min-h-[44px] rounded-md border p-2 text-left text-sm ${options.fastest === 'stop' ? 'border-green-600 bg-green-50' : 'border-stone-300'}`}
+                    className={`min-h-[44px] rounded-md border p-2 text-left text-sm ${options.fastest === 'stop' ? 'border-green-600 bg-green-50' : 'border-stone-300'} ${chosenKind && chosenKind !== 'stop' ? 'opacity-50' : ''}`}
                   >
                     <span className="font-bold">
                       STOP & WAIT at {options.stop.name}{' '}
+                      {chosenKind === 'stop' && <span className="text-blue-700">· Selected ✓</span>}
                       {options.fastest === 'stop' && <span className="text-green-700">· Fastest</span>}
                     </span>
                     <br />
@@ -2211,14 +2368,27 @@ export default function SimPage() {
                 {latest && remaining && (
                   <div className="mt-2 rounded-md bg-stone-50 p-2">
                     <p className="text-sm font-semibold">
-                      Clears in {remaining.lowMin}–{remaining.highMin} min
+                      {remaining.unconfirmed
+                        ? 'Clears in about 5 min'
+                        : `Clears in about ${remaining.likelyMin} min`}
                     </p>
+                    <p className="text-xs text-stone-600">
+                      {remaining.unconfirmed
+                        ? 'Range 0–10 min'
+                        : `Range ${remaining.lowMin}–${remaining.highMin} min · ${capFirst(latest.assessment.confidence)} confidence`}
+                    </p>
+                    {latest.assessment.confidence === 'low' && (
+                      <p className="text-xs font-semibold text-amber-800">
+                        Low confidence:{' '}
+                        {latest.assessment.uncertainties[0] ?? latest.assessment.rangeReason}
+                      </p>
+                    )}
                     {remaining.unconfirmed && remaining.unconfirmedLabel && (
                       <p className="text-xs text-amber-800">{remaining.unconfirmedLabel}</p>
                     )}
                     <p className="text-xs text-stone-600">{latest.assessment.rangeReason}</p>
                     <p className="text-xs text-stone-600">
-                      Narrows if: {latest.assessment.narrowsIf}
+                      Narrows if: {stripNarrowsPrefix(latest.assessment.narrowsIf)}
                     </p>
                     <p className="text-xs text-stone-500">
                       {latest.source === 'muse-wonder'
@@ -2230,6 +2400,8 @@ export default function SimPage() {
                         <button
                           key={idx}
                           type="button"
+                          title={e.claim}
+                          aria-label={`Play Report ${reportNumber(e.reportId)} at ${fmtClock(e.second)}: ${e.claim}`}
                           onClick={() => {
                             const clip = reportClip(e.reportId);
                             if (!clip) return;
@@ -2239,9 +2411,15 @@ export default function SimPage() {
                               label: `Report ${reportNumber(e.reportId)} · ${fmtClock(e.second)} · ${e.claim}`,
                             });
                           }}
-                          className="min-h-[32px] rounded-full border border-stone-300 bg-white px-2 py-1 text-left text-xs font-semibold hover:bg-stone-100"
+                          className="flex min-h-[44px] min-w-0 max-w-full items-center gap-1 rounded-full border border-stone-400 bg-white px-3 py-2 text-left text-xs font-semibold hover:border-blue-700 hover:bg-blue-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-700"
                         >
-                          Report {reportNumber(e.reportId)} · {fmtClock(e.second)} · {e.claim}
+                          <span aria-hidden className="shrink-0 text-blue-700">▶</span>
+                          <span className="shrink-0">
+                            Report {reportNumber(e.reportId)} · {fmtClock(e.second)}
+                          </span>
+                          <span className="min-w-0 flex-1 truncate font-normal text-stone-600">
+                            {e.claim}
+                          </span>
                         </button>
                       ))}
                     </div>
@@ -2311,6 +2489,9 @@ export default function SimPage() {
             );
           })}
         </section>
+        <footer className="text-xs text-stone-500">
+          Demo uses stock footage as stand-ins for one incident.
+        </footer>
       </div>
 
       {modal && (
@@ -2384,13 +2565,29 @@ export default function SimPage() {
           role="dialog"
           aria-modal="true"
           aria-label="Evidence clip"
+          onClick={() => setEvidencePlay(null)}
           className="fixed inset-0 z-50 flex items-end justify-center bg-black/60 p-3 sm:items-center"
         >
-          <div className="max-h-[85dvh] w-full max-w-md overflow-y-auto rounded-lg bg-white p-3">
-            <p className="text-sm font-semibold">{evidencePlay.label}</p>
-            <p className="text-xs text-stone-600">
-              {evidencePlay.clip} · from {fmtClock(evidencePlay.second)}
-            </p>
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="max-h-[85dvh] w-full max-w-md overflow-y-auto rounded-lg bg-white p-3"
+          >
+            <div className="flex items-start justify-between gap-2">
+              <div className="min-w-0">
+                <p className="text-sm font-semibold">{evidencePlay.label}</p>
+                <p className="text-xs text-stone-600">
+                  {evidencePlay.clip} · from {fmtClock(evidencePlay.second)}
+                </p>
+              </div>
+              <button
+                type="button"
+                aria-label="Close evidence clip"
+                onClick={() => setEvidencePlay(null)}
+                className="flex min-h-[44px] min-w-[44px] shrink-0 items-center justify-center rounded-md border border-stone-300 text-lg font-semibold hover:bg-stone-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-700"
+              >
+                ✕
+              </button>
+            </div>
             <video
               key={`${evidencePlay.clip}-${evidencePlay.second}`}
               src={`/clips/prepped/${encodeURIComponent(evidencePlay.clip)}.mp4#t=${evidencePlay.second}`}

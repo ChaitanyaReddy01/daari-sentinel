@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 import type { VerdictCheck } from './checks';
-import { clearanceEstimate } from './clearance';
+import { planningDefault, type PlanningDefault } from './clearance';
 import type { Verdict } from './verdict';
 
 /**
@@ -45,9 +45,10 @@ export const AgentAssessmentSchema = z.object({
   stageConfidence: z.number().min(0).max(1),
   clearance: z.object({
     lowMin: z.number().min(0).max(240),
-    midMin: z.number().min(0).max(240),
+    likelyMin: z.number().min(0).max(240),
     highMin: z.number().min(0).max(240),
   }),
+  confidence: z.enum(['high', 'medium', 'low']),
   rangeReason: z
     .string()
     .min(1)
@@ -89,11 +90,16 @@ export const AGENT_JSON_SCHEMA: Record<string, unknown> = {
       type: 'object',
       properties: {
         lowMin: { type: 'number', minimum: 0, maximum: 240 },
-        midMin: { type: 'number', minimum: 0, maximum: 240 },
+        likelyMin: { type: 'number', minimum: 0, maximum: 240 },
         highMin: { type: 'number', minimum: 0, maximum: 240 },
       },
-      required: ['lowMin', 'midMin', 'highMin'],
+      required: ['lowMin', 'likelyMin', 'highMin'],
       additionalProperties: false,
+    },
+    confidence: {
+      type: 'string',
+      enum: ['high', 'medium', 'low'],
+      description: 'low when evidence is thin, night, or conflicting',
     },
     rangeReason: {
       type: 'string',
@@ -152,6 +158,7 @@ export const AGENT_JSON_SCHEMA: Record<string, unknown> = {
     'stage',
     'stageConfidence',
     'clearance',
+    'confidence',
     'rangeReason',
     'narrowsIf',
     'lanes',
@@ -229,14 +236,19 @@ export interface GuardResult {
 /**
  * Verify a candidate assessment. Evidence drops invalid items (none left =
  * invalid); range ordering/bounds/cleared rule = invalid for retry; backward
- * stages and unsupported responder stages are auto-fixed with notes.
+ * stages, unsupported responder stages, and over-wide ranges are auto-fixed
+ * with notes.
  */
 export function guardAssessment(
   candidate: AgentAssessment,
-  ctx: { reports: AgentReportInput[]; previousAssessment: AgentAssessment | null },
+  ctx: {
+    reports: AgentReportInput[];
+    previousAssessment: AgentAssessment | null;
+    baseline: PlanningDefault;
+  },
 ): GuardResult {
   const notes: string[] = [];
-  const { reports, previousAssessment } = ctx;
+  const { reports, previousAssessment, baseline } = ctx;
 
   const byId = new Map(reports.map((r) => [r.reportId, r]));
   const cleaned: AgentEvidence[] = [];
@@ -260,10 +272,12 @@ export function guardAssessment(
     notes.push(`Dropped ${candidate.evidence.length - cleaned.length} invalid evidence item(s).`);
   }
 
-  const { lowMin, midMin, highMin } = candidate.clearance;
+  const { lowMin, likelyMin, highMin } = candidate.clearance;
   const rangeErrors: string[] = [];
-  if (!(lowMin <= midMin && midMin <= highMin)) {
-    rangeErrors.push(`clearance: need lowMin <= midMin <= highMin (got ${lowMin}/${midMin}/${highMin})`);
+  if (!(lowMin <= likelyMin && likelyMin <= highMin)) {
+    rangeErrors.push(
+      `clearance: need lowMin <= likelyMin <= highMin (got ${lowMin}/${likelyMin}/${highMin})`,
+    );
   }
   if (candidate.stage === 'cleared' && highMin > 5) {
     rangeErrors.push(`clearance: stage cleared requires highMin <= 5 (got ${highMin})`);
@@ -325,11 +339,11 @@ export function guardAssessment(
       fixed.stage = 'no_responders';
       const width = fixed.clearance.highMin - fixed.clearance.lowMin;
       const newWidth = width * 1.5;
-      const mid = fixed.clearance.midMin;
+      const likely = fixed.clearance.likelyMin;
       fixed.clearance = {
-        lowMin: Math.max(0, Math.round(mid - newWidth / 2)),
-        midMin: mid,
-        highMin: Math.min(240, Math.round(mid + newWidth / 2)),
+        lowMin: Math.max(0, Math.round(likely - newWidth / 2)),
+        likelyMin: likely,
+        highMin: Math.min(240, Math.round(likely + newWidth / 2)),
       };
       notes.push(`Downgraded ${from} to no_responders: no report shows responders; widened range 50%.`);
       if (fixed.uncertainties.length < 3) {
@@ -338,10 +352,23 @@ export function guardAssessment(
     }
   }
 
+  // Width clamp: wider than the planning baseline needs low confidence.
+  const baseWidth = baseline.highMin - baseline.lowMin;
+  const fixedWidth = fixed.clearance.highMin - fixed.clearance.lowMin;
+  if (baseWidth > 0 && fixedWidth > baseWidth && fixed.confidence !== 'low') {
+    const likely = fixed.clearance.likelyMin;
+    fixed.clearance = {
+      lowMin: Math.min(likely, Math.max(0, Math.round(likely - baseWidth / 2))),
+      likelyMin: likely,
+      highMin: Math.max(likely, Math.min(240, Math.round(likely + baseWidth / 2))),
+    };
+    notes.push(`Clamped range to the ${baseWidth}-min baseline width around likelyMin.`);
+  }
+
   return { valid: true, assessment: fixed, notes, errors: [] };
 }
 
-/** Fallback assessment from CLEARANCE_TABLE v1 (wonder failed or invalid). */
+/** Fallback assessment from the v2 planning defaults (wonder failed or invalid). */
 export function buildFallbackAssessment(args: {
   reports: AgentReportInput[];
   previousAssessment: AgentAssessment | null;
@@ -352,19 +379,11 @@ export function buildFallbackAssessment(args: {
   if (!latest) throw new Error('buildFallbackAssessment needs at least one report.');
   const verdict = latest.verdict;
   const stage = mapVerdictStage(verdict);
-  const tableType =
-    verdict.type === 'crash' || verdict.type === 'police_activity' || verdict.type === 'fire'
-      ? verdict.type
-      : 'other';
-  const est = clearanceEstimate(tableType, stage, verdict.severity);
-  let lowMin = est.loMin;
-  let midMin = est.midpointMin === null ? null : Math.round(est.midpointMin);
-  let highMin = est.hiMin;
-  if (lowMin === null || midMin === null || highMin === null) {
-    lowMin = 60;
-    midMin = 90;
-    highMin = 120;
-  }
+  const baseline =
+    verdict.type === 'construction'
+      ? { lowMin: 60, likelyMin: 90, highMin: 120 }
+      : planningDefault(verdict.type, stage, verdict.severity);
+  const { lowMin, likelyMin, highMin } = baseline;
   const firstEvidence = verdict.evidence[0];
   const evidence: AgentEvidence[] =
     firstEvidence !== undefined
@@ -380,7 +399,8 @@ export function buildFallbackAssessment(args: {
   const candidate: AgentAssessment = {
     stage,
     stageConfidence: 0.5,
-    clearance: { lowMin, midMin, highMin },
+    clearance: { lowMin, likelyMin, highMin },
+    confidence: 'medium',
     rangeReason: 'Fallback estimate from clearance table.',
     narrowsIf: 'Next camera report confirms scene.',
     lanes: {
@@ -392,7 +412,7 @@ export function buildFallbackAssessment(args: {
     driverMessage: verdict.summary,
     uncertainties: ['Fallback table estimate, not AI assessment'],
   };
-  const guarded = guardAssessment(candidate, { reports, previousAssessment });
+  const guarded = guardAssessment(candidate, { reports, previousAssessment, baseline });
   const notes = [`Fallback table used: ${reason}`, ...guarded.notes];
   if (guarded.valid && guarded.assessment) {
     return { assessment: guarded.assessment, notes };
@@ -407,7 +427,7 @@ export function displayClearance(
   hasClearedReport: boolean,
 ): {
   lowMin: number;
-  midMin: number;
+  likelyMin: number;
   highMin: number;
   unconfirmed: boolean;
   unconfirmedLabel: string | null;
@@ -416,7 +436,7 @@ export function displayClearance(
   if (!hasClearedReport && elapsed > assessment.clearance.highMin) {
     return {
       lowMin: 0,
-      midMin: 5,
+      likelyMin: 5,
       highMin: 10,
       unconfirmed: true,
       unconfirmedLabel: 'Likely clearing, unconfirmed: waiting for the next camera pass',
@@ -424,7 +444,7 @@ export function displayClearance(
   }
   return {
     lowMin: Math.max(0, Math.round(assessment.clearance.lowMin - elapsed)),
-    midMin: Math.max(0, Math.round(assessment.clearance.midMin - elapsed)),
+    likelyMin: Math.max(0, Math.round(assessment.clearance.likelyMin - elapsed)),
     highMin: Math.max(0, Math.round(assessment.clearance.highMin - elapsed)),
     unconfirmed: false,
     unconfirmedLabel: null,

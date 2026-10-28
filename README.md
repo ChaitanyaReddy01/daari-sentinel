@@ -27,6 +27,7 @@ Commit messages before this point say 'Day 1–3'; these were build steps, all c
 | Oct 27 | Step 4c: fix missing clip list on /sim |
 | Oct 27 | Step 4d: fix map zoom with follow mode |
 | Oct 27 | Step 5: Muse Wonder incident agent with verified evidence and honest ranges |
+| Oct 27 | Step 6: calibrated clearance times, clickable evidence, instant reroute feedback |
 
 ## Meta models used
 

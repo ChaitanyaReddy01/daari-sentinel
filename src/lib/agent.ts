@@ -20,9 +20,11 @@ import {
   AgentAssessmentSchema,
   buildFallbackAssessment,
   guardAssessment,
+  mapVerdictStage,
   type AgentAssessment,
   type AgentReportInput,
 } from './agent-guard';
+import { planningDefault, type PlanningDefault } from './clearance';
 
 /**
  * Muse Wonder incident agent (Step 5). Server-only: reads caches from disk
@@ -31,7 +33,7 @@ import {
  */
 
 /** Bump to invalidate cached assessments (prompt or schema changed). */
-export const AGENT_VERSION = 2;
+export const AGENT_VERSION = 3;
 
 export type { AgentAssessment, AgentReportInput };
 
@@ -67,16 +69,18 @@ const SYSTEM_PROMPT =
   'Give a RANGE, not a single number. Make the range wider when evidence is thin or unclear (one report only, night footage, lanes partly blocked with no sign of reopening, conflicting reports) ' +
   'and narrower when several consistent reports agree or clear signs show progress (tow truck loading, lanes reopening). ' +
   'Never claim responders, lanes or progress that no report supports. Cite evidence for every claim. ' +
-  'You receive JSON with reports[] (reportId, minutesSinceFirstReport, clip, reporterDirection same|oncoming, verdict full JSON, samCounts per concept with 16+ marks, checks[]), previousAssessment or null, minutesSinceLastReport, and timeOfDay day|night. ' +
-  'Stages in order: no_responders, responders_on_scene, tow_in_progress, clearing, cleared. Prefer the furthest stage the reports support; do not move backward on a single conflicting report. ' +
+  'You receive JSON with reports[] (reportId, minutesSinceFirstReport, clip, reporterDirection same|oncoming, verdict full JSON, samCounts per concept with 16+ marks, checks[]), previousAssessment or null, minutesSinceLastReport, timeOfDay day|night, and baseline {lowMin, likelyMin, highMin} planning defaults for the current type and stage. ' +
+  'In this simulation, reports use stand-in footage from different real scenes. Do not treat differences in road type, camera angle or location between reports as conflicts. Do flag conflicting stage signals (e.g., tow seen, then no responders). ' +
+  'Stages in order: no_responders, responders_on_scene, tow_in_progress, clearing, cleared. Prefer the furthest stage the reports support; do not move backward on a single conflicting stage signal. ' +
   'If the newest report finds no incident (verdict incident=false, free-flowing traffic), the stage MUST be cleared with highMin <= 5. ' +
   'Reports from oncoming cars (reporterDirection oncoming) are equally valid; treat them the same as same-direction reports. ' +
-  'Clearance lowMin/midMin/highMin are minutes from NOW. Keep 0-240 with low<=mid<=high. ' +
-  'Range width: one report only or night footage means a wide range; mention limited evidence and/or night in rangeReason. ' +
-  'Several consistent reports or visible progress (tow loading, lanes reopening) means a narrow range. ' +
+  'Clearance lowMin/likelyMin/highMin are minutes from NOW. Keep 0-240 with low<=likely<=high. likelyMin is the single most likely clearance time. ' +
+  'Start from the baseline; move away from it only with evidence you cite in rangeReason, by at most 50% of the baseline bounds. ' +
+  'Keep the range width (highMin minus lowMin) at most the baseline width, unless you set confidence low and say why. ' +
+  'Set confidence low when evidence is thin (one report only), night footage limits visibility, the type is unknown, or stage signals conflict; say why in rangeReason or uncertainties. Otherwise use medium, or high when several consistent reports agree. ' +
+  'A single clear day report with plainly visible blockage should come in slightly narrower than its baseline. ' +
+  'Mention limited evidence and/or night in rangeReason whenever they apply. ' +
   'Three consistent reports showing tow progress must be narrower than a single initial report, even at night. ' +
-  'Reserve highs above 180 for night footage, unknown incident types, or conflicting reports; a single clear day report stays at or below 150 high. ' +
-  'A single night report with an unknown type must span more than 160 minutes wide. ' +
   'lanes.blocked follows the newest verdict lanesBlocked; reopeningSoon is yes only when a report shows lanes reopening or a tow nearly done, no when blocked with no sign of reopening, else unknown. ' +
   'Evidence: 1-5 items of {reportId, second, claim}; every reportId must match an input report and every second must lie inside that clip. ' +
   'Every stage, lanes, and clearance claim must trace to at least one evidence item. ' +
@@ -108,13 +112,19 @@ const AGENT_DIR = path.join(process.cwd(), 'data', 'cache', 'agent');
 const LEDGER_PATH = path.join(process.cwd(), 'data', 'ledger.jsonl');
 
 export function agentCacheKeyFor(input: AssessIncidentInput): string {
+  // Round minutes to 0.1 (6 s): demo fire times land a frame or two past
+  // the mark, and replays must hit the same cache entry.
+  const round1 = (n: number): number => Math.round(n * 10) / 10;
   return crypto
     .createHash('sha256')
     .update(
       JSON.stringify({
-        reports: input.reports,
+        reports: input.reports.map((r) => ({
+          ...r,
+          minutesSinceFirstReport: round1(r.minutesSinceFirstReport),
+        })),
         previousAssessment: input.previousAssessment,
-        minutesSinceLastReport: input.minutesSinceLastReport,
+        minutesSinceLastReport: round1(input.minutesSinceLastReport),
         timeOfDay: input.timeOfDay,
         v: AGENT_VERSION,
       }),
@@ -279,10 +289,22 @@ function storeAndLedger(args: {
   return stored;
 }
 
+/** Planning baseline for the newest report's type, stage, and severity. */
+export function baselineFor(
+  reports: AgentReportInput[],
+): PlanningDefault {
+  const latest = reports[reports.length - 1];
+  const verdict = latest.verdict;
+  if (verdict.type === 'construction') {
+    return { lowMin: 60, likelyMin: 90, highMin: 120 };
+  }
+  return planningDefault(verdict.type, mapVerdictStage(verdict), verdict.severity);
+}
+
 /**
  * Assess one incident from its camera reports. Runs once per added report,
- * never per frame. Cached by report list + version; falls back to
- * CLEARANCE_TABLE v1 when Wonder fails or stays invalid after one retry.
+ * never per frame. Cached by report list + version; falls back to the
+ * planning defaults when Wonder fails or stays invalid after one retry.
  */
 export async function assessIncident(
   input: AssessIncidentInput,
@@ -294,11 +316,13 @@ export async function assessIncident(
   const hit = readAgentCache(key);
   if (hit) return { result: hit, cached: true };
 
+  const baseline = baselineFor(input.reports);
   const baseUserText = JSON.stringify({
     reports: input.reports,
     previousAssessment: input.previousAssessment,
     minutesSinceLastReport: input.minutesSinceLastReport,
     timeOfDay: input.timeOfDay,
+    baseline,
   });
 
   let meta: typeof import('./meta').meta;
@@ -388,6 +412,7 @@ export async function assessIncident(
     const guarded = guardAssessment(checked.data, {
       reports: input.reports,
       previousAssessment: input.previousAssessment,
+      baseline,
     });
     if (!guarded.valid || !guarded.assessment) {
       return { ok: false, error: guarded.errors.join('; ') || 'guard rejected the assessment' };

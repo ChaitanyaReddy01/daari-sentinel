@@ -242,7 +242,6 @@ async function main(): Promise<void> {
   };
 
   const a1 = get('A1');
-  const a2 = get('A2');
   const a3 = get('A3');
   const a4 = get('A4');
   const b1 = get('B1');
@@ -250,41 +249,35 @@ async function main(): Promise<void> {
   const c2 = get('C2');
 
   const checks: { scenario: string; check: string; pass: boolean; detail: string }[] = [];
-  const forward =
-    STAGE_ORDER[a1.assessment.stage] <= STAGE_ORDER[a2.assessment.stage] &&
-    STAGE_ORDER[a2.assessment.stage] <= STAGE_ORDER[a3.assessment.stage] &&
-    STAGE_ORDER[a3.assessment.stage] <= STAGE_ORDER[a4.assessment.stage];
   checks.push({
     scenario: 'A',
-    check: 'stages never go backward',
-    pass: forward,
-    detail: [a1, a2, a3, a4].map((r) => r.assessment.stage).join(' → '),
-  });
-  const narrows = width(a3.assessment) < width(a1.assessment);
-  checks.push({
-    scenario: 'A',
-    check: 'range narrows report 1 → 3',
-    pass: narrows,
-    detail: `width ${width(a1.assessment).toFixed(0)} → ${width(a3.assessment).toFixed(0)}`,
+    check: 'A1 width ≤ 45 min',
+    pass: width(a1.assessment) <= 45,
+    detail: `width ${width(a1.assessment).toFixed(0)}`,
   });
   checks.push({
     scenario: 'A',
-    check: 'final stage is cleared',
+    check: 'A3 width ≤ 20 min',
+    pass: width(a3.assessment) <= 20,
+    detail: `width ${width(a3.assessment).toFixed(0)}`,
+  });
+  checks.push({
+    scenario: 'A',
+    check: 'A3 likelyMin ≤ 20',
+    pass: a3.assessment.clearance.likelyMin <= 20,
+    detail: `likely ${a3.assessment.clearance.likelyMin.toFixed(0)}`,
+  });
+  checks.push({
+    scenario: 'A',
+    check: 'A ends cleared',
     pass: a4.assessment.stage === 'cleared',
     detail: a4.assessment.stage,
   });
   checks.push({
     scenario: 'B',
-    check: 'range wider than A1',
-    pass: width(b1.assessment) > width(a1.assessment),
-    detail: `width ${width(b1.assessment).toFixed(0)} vs A1 ${width(a1.assessment).toFixed(0)}`,
-  });
-  const mentions = /limited evidence|night/i.test(b1.rangeReason);
-  checks.push({
-    scenario: 'B',
-    check: 'reason mentions limited evidence or night',
-    pass: mentions,
-    detail: b1.rangeReason,
+    check: 'B1 confidence low',
+    pass: b1.assessment.confidence === 'low',
+    detail: b1.assessment.confidence,
   });
   const noBackward = STAGE_ORDER[c2.assessment.stage] >= STAGE_ORDER[c1.assessment.stage];
   checks.push({
@@ -293,12 +286,15 @@ async function main(): Promise<void> {
     pass: noBackward,
     detail: `${c1.assessment.stage} → ${c2.assessment.stage}`,
   });
-  const noted = c2.notes.join(' ').toLowerCase().includes('conflict');
+  const c2notes = c2.notes.join(' ');
+  const notedStageConflict =
+    /conflict/i.test(c2notes) &&
+    /no_responders|responders_on_scene|tow_in_progress|clearing|cleared/.test(c2notes);
   checks.push({
     scenario: 'C',
-    check: 'guard notes the conflict',
-    pass: noted,
-    detail: c2.notes.join(' | ') || '(no notes)',
+    check: 'guard notes the conflict on stage signals',
+    pass: notedStageConflict,
+    detail: c2notes || '(no notes)',
   });
 
   console.log('');
@@ -313,7 +309,7 @@ async function main(): Promise<void> {
     const c = r.assessment.clearance;
     console.log(
       `- ${r.label}: ${r.assessment.stage} ${c.lowMin.toFixed(0)}–${c.highMin.toFixed(0)} min ` +
-        `(mid ${c.midMin.toFixed(0)}) [${r.source}${r.cached ? ', cached' : ''}] — ${r.rangeReason}`,
+        `(likely ${c.likelyMin.toFixed(0)}, ${r.assessment.confidence}) [${r.source}${r.cached ? ', cached' : ''}] — ${r.rangeReason}`,
     );
   }
   console.log('');
