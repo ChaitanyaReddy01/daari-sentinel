@@ -9,6 +9,7 @@
     "lint": "next lint",
     "prep-clip": "tsx scripts/prep-clip.ts",
     "test:jam": "tsx scripts/test-jam-model.ts",
+    "test:stop": "tsx scripts/test-stop-wait.ts",
     "test:agent": "tsx scripts/agent-check.ts",
     "blur:sam": "tsx scripts/blur-run.ts",
     "blur:clips": "tsx scripts/blur-clips.ts",

@@ -1,12 +1,12 @@
 # Daari Sentinel
 
-Dashcam footage becomes an early incident warning: cameras see the crash, and drivers behind get a stay / reroute / wait decision before they reach it.
+Road cameras — dashcams in cars and roadside traffic cameras — become an early incident warning: cameras see the crash, and drivers behind get a stay / reroute / wait decision before they reach it.
 
 ![Warning card on /sim](docs/sim-warning.png)
 
 ## What it does
 
-- Watches dashcam clips and detects road incidents: crashes, emergency vehicles, debris, road work.
+- Watches road-camera clips (dashcams in cars and roadside traffic cameras) and detects road incidents: crashes, emergency vehicles, debris, road work.
 - Cross-checks every AI claim against tracked objects, so the evidence is visible, not a black box.
 - Predicts how long until the road clears, as an honest range that narrows as more cameras pass.
 - Warns the driver ahead of the scene with three scored options: stay, reroute, or stop and wait.
@@ -16,7 +16,7 @@ Dashcam footage becomes an early incident warning: cameras see the crash, and dr
 
 ```mermaid
 flowchart LR
-    A[Dashcam clip] --> B[SAM 3.1: find + track objects]
+    A[Road camera clip] --> B[SAM 3.1: find + track objects]
     B --> C[Muse Spark: scene verdict]
     B --> D[Evidence cross-check]
     C --> D
@@ -56,6 +56,14 @@ Verdict accuracy on 19 labeled clips ([full report](data/eval/batch-report.md)):
 - Incident detected: **19/19**, type right: **18/19**, responders right: **72/76**
 - Zero false alarms on **8** normal-traffic clips
 
+Camera view per eval clip (from the footage itself):
+
+| View | Clips |
+| ---- | ----- |
+| Aerial (13) | crash-1, traffic-cars-1, traffic-cars-2, police-car-1, cars-with-police-1, crowd-people-1, car-tow-ambulance-police-1, rd-construction-1, policecars-1, policecars-2, car-traffic-3, road-work-2, road-work-3 |
+| Traffic-cam (3) | traffic-cars-3, car-police-tow-1, ambulance-fire-1 |
+| Dashcam (3) | traffic-normal-1, car-accident-1, dash-cam-car-1 |
+
 Agent check (`npx tsx scripts/agent-check.ts`, 7/7 PASS):
 
 - Stages never go backward across the 4-report demo sequence, ending `cleared`
@@ -92,6 +100,7 @@ runs out with no "cleared" report, the card says so instead of declaring it clea
 ## Honest limitations
 
 - The demo uses stock footage as stand-ins for one incident across reports.
+- Most incident footage in the demo is aerial or traffic-camera style stock video; dashcam-view footage covers normal traffic and work zones.
 - SAM's video mode caps at 16 tracked objects per frame; we add uncapped still-frame counts for cars, trucks and people.
 - Clearance calibration is planning defaults plus agent judgment, not fitted to real clearance records.
 - This is a simulation with scripted camera passes, not a live fleet.

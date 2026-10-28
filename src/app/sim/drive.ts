@@ -277,6 +277,46 @@ export function stayDelayRange(
   };
 }
 
+export interface StopWaitEstimate {
+  waitMin: number;
+  waitLoMin: number;
+  waitHiMin: number;
+  arrivalMin: number;
+  arrivalLoMin: number;
+  arrivalHiMin: number;
+}
+
+/**
+ * STOP & WAIT estimate for the nearest incident: wait out the *clearance*
+ * (not the stay delay), then drive on. Null when the incident clears before
+ * you would reach it. Arrivals add the 3-min residual queue.
+ */
+export function stopWaitEstimate(args: {
+  clearLoMin: number;
+  clearLikelyMin: number;
+  clearHiMin: number;
+  toStopMin: number;
+  stopToIncidentMin: number;
+  stopToDestMin: number;
+}): StopWaitEstimate | null {
+  const toIncident = args.toStopMin + args.stopToIncidentMin;
+  if (args.clearHiMin <= toIncident) return null;
+  const waitFor = (c: number): number => Math.max(5, c - toIncident);
+  const waitLoMin = waitFor(args.clearLoMin);
+  const waitMin = waitFor(args.clearLikelyMin);
+  const waitHiMin = waitFor(args.clearHiMin);
+  const arrival = (w: number): number =>
+    args.toStopMin + w + args.stopToDestMin + WAIT_RESIDUAL_MIN;
+  return {
+    waitMin,
+    waitLoMin,
+    waitHiMin,
+    arrivalMin: arrival(waitMin),
+    arrivalLoMin: arrival(waitLoMin),
+    arrivalHiMin: arrival(waitHiMin),
+  };
+}
+
 /** REROUTE extra minutes vs the main route. Never negative. */
 export function rerouteDelayMin(
   toDivergeSec: number,

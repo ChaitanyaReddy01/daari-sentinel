@@ -28,7 +28,6 @@ import {
   type SlowZone,
 } from '@/lib/sim';
 import {
-  WAIT_RESIDUAL_MIN,
   beep,
   buildStepSpeeds,
   decideByLabel,
@@ -41,6 +40,7 @@ import {
   speak,
   speedAtSpeeds,
   stayDelayRange,
+  stopWaitEstimate,
   subPath,
   type StepSpeed,
 } from './drive';
@@ -165,6 +165,8 @@ interface StopOption {
   name: string;
   waitMin: number;
   arrivalClock: string;
+  arrivalLoClock: string;
+  arrivalHiClock: string;
   stopS: number;
   resumeAt: number;
   arrivalS: number;
@@ -1900,20 +1902,34 @@ export default function SimPage() {
             }
             if (pickStop) {
               const driveT = projectToSWithSpeeds(aS, pickStop.s, zones, plan.speeds, base);
-              const waitMin = Math.max(5, stay.mid / 60 - tMin);
-              const resumeAt = simNow + driveT + waitMin * 60;
-              const arrivalS = stay.drive + waitMin * 60 + WAIT_RESIDUAL_MIN * 60;
-              stop = {
-                name: pickStop.name,
-                waitMin,
-                arrivalClock: formatEta(simNow, arrivalS),
-                stopS: pickStop.s,
-                resumeAt,
-                arrivalS,
-              };
-              if (arrivalS < bestS) {
-                bestS = arrivalS;
-                fastest = 'stop';
+              const c = incidentRangeAt(withS[0].i, simNow);
+              const est = stopWaitEstimate({
+                clearLoMin: c.lo,
+                clearLikelyMin: c.likely,
+                clearHiMin: c.hi,
+                toStopMin: driveT / 60,
+                stopToIncidentMin:
+                  projectToSWithSpeeds(pickStop.s, nS, zones, plan.speeds, base) / 60,
+                stopToDestMin:
+                  remainingWithSpeeds(pickStop.s, plan.speeds, base, plan.geom.length) / 60,
+              });
+              if (est) {
+                const resumeAt = simNow + driveT + est.waitMin * 60;
+                const arrivalS = est.arrivalMin * 60;
+                stop = {
+                  name: pickStop.name,
+                  waitMin: est.waitMin,
+                  arrivalClock: formatEta(simNow, arrivalS),
+                  arrivalLoClock: formatEta(simNow, est.arrivalLoMin * 60),
+                  arrivalHiClock: formatEta(simNow, est.arrivalHiMin * 60),
+                  stopS: pickStop.s,
+                  resumeAt,
+                  arrivalS,
+                };
+                if (arrivalS < bestS) {
+                  bestS = arrivalS;
+                  fastest = 'stop';
+                }
               }
             }
           }
@@ -2449,7 +2465,7 @@ export default function SimPage() {
           Bridgeport.
         </p>
         <footer className="text-xs text-stone-500">
-          Demo uses stock footage as stand-ins for one incident.
+          Demo uses stock road-camera footage as stand-ins for one incident.
         </footer>
       </main>
     );
@@ -2675,7 +2691,7 @@ export default function SimPage() {
                       {options.fastest === 'stop' && <span className="text-green-700">· Fastest</span>}
                     </span>
                     <br />
-                    Wait {fmtMin(options.stop.waitMin * 60)} · arrive {options.stop.arrivalClock}
+                    Wait {fmtMin(options.stop.waitMin * 60)} · arrive {options.stop.arrivalClock} ({options.stop.arrivalLoClock}–{options.stop.arrivalHiClock})
                   </button>
                 )}
               </div>
@@ -2900,7 +2916,7 @@ export default function SimPage() {
           })}
         </section>
         <footer className="text-xs text-stone-500">
-          Demo uses stock footage as stand-ins for one incident.
+          Demo uses stock road-camera footage as stand-ins for one incident.
         </footer>
       </div>
 
