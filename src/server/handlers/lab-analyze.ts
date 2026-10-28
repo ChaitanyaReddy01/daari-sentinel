@@ -52,8 +52,11 @@ export async function POST(req: Request): Promise<Response> {
 
     const concepts = Array.from(new Set(parsed.data.concepts ?? CONCEPTS));
 
-    // Cached upload: the same clip bytes are never uploaded twice.
-    const fileId = await uploadClip(preppedVideoPath(clip));
+    // Cached upload: the same clip bytes are never uploaded twice. Skip the
+    // upload entirely when everything is cached (production has no video
+    // files); runSam returns early on cache hits without touching fileId.
+    const needUpload = concepts.some((c) => readSamCache(hash, c) === null);
+    const fileId = needUpload ? await uploadClip(preppedVideoPath(clip)) : 'cached';
 
     const clipMeta = {
       frameCount: clipInfo.frameCount,

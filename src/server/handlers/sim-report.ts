@@ -107,7 +107,11 @@ export async function POST(req: Request): Promise<Response> {
     const { CONCEPTS: concepts, estimateCostUSD, getSpend, runSam } = await import('@/lib/sam');
     const { runVerdict } = await import('@/lib/spark');
 
-    const fileId = await uploadClip(preppedVideoPath(clip));
+    // Skip the upload when every SAM concept is already cached: runSam
+    // returns early on cache hits without touching fileId, and production
+    // ships no video files to upload.
+    const needUpload = concepts.some((c) => readSamCache(hash, c) === null);
+    const fileId = needUpload ? await uploadClip(preppedVideoPath(clip)) : 'cached';
     const meta = {
       frameCount: clipInfo.frameCount,
       fps: clipInfo.fps,
