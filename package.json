@@ -9,14 +9,19 @@
     "lint": "next lint",
     "prep-clip": "tsx scripts/prep-clip.ts",
     "test:jam": "tsx scripts/test-jam-model.ts",
-    "test:agent": "tsx scripts/agent-check.ts"
+    "test:agent": "tsx scripts/agent-check.ts",
+    "blur:sam": "tsx scripts/blur-run.ts",
+    "blur:clips": "tsx scripts/blur-clips.ts",
+    "snapshot": "tsx scripts/export-snapshot.ts"
   },
   "dependencies": {
     "@meta-sam/parser": "^0.1.0",
+    "ffmpeg-static": "^5.3.0",
     "next": "14.2.35",
     "openai": "^7.45.0",
     "react": "^18",
     "react-dom": "^18",
+    "sharp": "^0.35.5",
     "zod": "^4.6.7"
   },
   "devDependencies": {

@@ -25,6 +25,7 @@ import {
   type AgentReportInput,
 } from './agent-guard';
 import { planningDefault, type PlanningDefault } from './clearance';
+import { assertLiveCalls, readSnapshotJson } from './snapshot';
 
 /**
  * Muse Wonder incident agent (Step 5). Server-only: reads caches from disk
@@ -136,15 +137,17 @@ export function agentCachePath(key: string): string {
   return path.join(AGENT_DIR, `${key}.json`);
 }
 
-/** Cached assessment; version mismatch counts as a miss. */
+/** Cached assessment (data/cache/, then the snapshot); version mismatch is a miss. */
 export function readAgentCache(key: string): StoredAssessment | null {
+  let parsed: StoredAssessment | null = null;
   try {
-    const parsed = JSON.parse(fs.readFileSync(agentCachePath(key), 'utf8')) as StoredAssessment;
-    if (!parsed || parsed.agentVersion !== AGENT_VERSION || !parsed.assessment) return null;
-    return parsed;
+    const raw = fs.readFileSync(agentCachePath(key), 'utf8');
+    parsed = JSON.parse(raw) as StoredAssessment;
   } catch {
-    return null;
+    parsed = readSnapshotJson<StoredAssessment>(path.join('agent', `${key}.json`));
   }
+  if (!parsed || parsed.agentVersion !== AGENT_VERSION || !parsed.assessment) return null;
+  return parsed;
 }
 
 /** Day or night from the clip verdict (night wording means night). */
@@ -328,7 +331,9 @@ export async function assessIncident(
   let meta: typeof import('./meta').meta;
   try {
     ({ meta } = await import('./meta'));
-  } catch {
+    assertLiveCalls(`Wonder assessment ${key.slice(0, 12)}…`);
+  } catch (err) {
+    if (err instanceof Error && err.message.includes('is not in the local snapshot')) throw err;
     const fb = buildFallbackAssessment({
       reports: input.reports,
       previousAssessment: input.previousAssessment,

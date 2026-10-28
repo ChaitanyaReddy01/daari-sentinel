@@ -6,6 +6,7 @@ import type { ResponseInputMessageItem } from 'openai/resources/responses/respon
 
 import { meta } from './meta';
 import { readSamCache, samCachePath, slug } from './sam-cache';
+import { assertLiveCalls } from './snapshot';
 
 export { readSamCache, samCachePath, slug };
 
@@ -129,6 +130,7 @@ export async function runSam({
 }): Promise<SamCachedResult> {
   const cached = readSamCache(hash, concept);
   if (cached) return cached;
+  assertLiveCalls(`SAM "${concept}" on ${hash.slice(0, 12)}…`);
 
   // `input_video` is a Meta Responses extension over the OpenAI-compatible
   // input shape, so the message needs a cast at this boundary.

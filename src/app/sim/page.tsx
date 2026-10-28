@@ -3000,7 +3000,7 @@ export default function SimPage() {
             </div>
             <video
               key={`${evidencePlay.clip}-${evidencePlay.second}`}
-              src={`/clips/prepped/${encodeURIComponent(evidencePlay.clip)}.mp4#t=${evidencePlay.second}`}
+              src={`/clips/blurred/${encodeURIComponent(evidencePlay.clip)}.mp4#t=${evidencePlay.second}`}
               controls
               autoPlay
               playsInline

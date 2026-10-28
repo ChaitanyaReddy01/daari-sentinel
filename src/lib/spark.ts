@@ -24,6 +24,7 @@ import {
   verdictCachePath,
   type VerdictCachedResult,
 } from './verdict-cache';
+import { assertLiveCalls } from './snapshot';
 
 /**
  * Muse Spark scene verdict. Keyed: every fresh call bills the API, so results
@@ -153,6 +154,7 @@ export async function runVerdict({
 
   const hit = readVerdictCache(hash);
   if (hit) return { result: hit, cached: true };
+  assertLiveCalls(`Spark verdict on ${clip}`);
 
   const fileId = await uploadClip(videoPath);
   const baseUserText =

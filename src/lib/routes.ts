@@ -1,6 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { assertLiveCalls, readSnapshotJson } from './snapshot';
+
 /**
  * Server-only Google Routes API client (computeRoutes). Never import from
  * client components: GOOGLE_MAPS_SERVER_KEY must never reach the browser.
@@ -39,15 +41,16 @@ function cachePath(name: string): string {
 }
 
 export function readRouteCache(name: string): RouteData | null {
+  let parsed: RouteData | null = null;
   try {
-    const parsed = JSON.parse(fs.readFileSync(cachePath(name), 'utf8')) as RouteData;
-    if (!parsed || typeof parsed.encodedPolyline !== 'string' || !parsed.encodedPolyline) {
-      return null;
-    }
-    return parsed;
+    parsed = JSON.parse(fs.readFileSync(cachePath(name), 'utf8')) as RouteData;
   } catch {
+    parsed = readSnapshotJson<RouteData>(path.join('routes', `${name}.json`));
+  }
+  if (!parsed || typeof parsed.encodedPolyline !== 'string' || !parsed.encodedPolyline) {
     return null;
   }
+  return parsed;
 }
 
 function appendRoutesLedger(name: string): void {
@@ -65,6 +68,7 @@ function appendRoutesLedger(name: string): void {
 }
 
 async function fetchRoute(name: 'main' | 'detour'): Promise<RouteData> {
+  assertLiveCalls(`Routes API ${name} route`);
   const body: Record<string, unknown> = {
     origin: { address: ORIGIN },
     destination: { address: DESTINATION },

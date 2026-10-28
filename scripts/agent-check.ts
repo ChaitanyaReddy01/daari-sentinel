@@ -95,6 +95,7 @@ function ledgerAgentTotal(): number {
 
 async function main(): Promise<void> {
   process.chdir(ROOT);
+  process.env.LIVE_CALLS = 'true'; // live tool: gated API calls are intended
   const hasKey = loadEnvKey();
   if (!hasKey) {
     console.log('agent-check: MODEL_API_KEY is not set — assessments will use the fallback table.');

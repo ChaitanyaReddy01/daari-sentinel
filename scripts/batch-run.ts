@@ -154,6 +154,7 @@ function errMessage(err: unknown): string {
 
 async function main(): Promise<void> {
   process.chdir(ROOT);
+  process.env.LIVE_CALLS = 'true'; // live tool: gated API calls are intended
   loadEnvKey();
 
   // Keyed modules load only after the key is set.

@@ -1,10 +1,100 @@
 # Daari Sentinel
 
-## What it is
+Dashcam footage becomes an early incident warning: cameras see the crash, and drivers behind get a stay / reroute / wait decision before they reach it.
 
-Daari Sentinel turns dashcam footage into early road-incident warnings: Meta models
-detect road incidents (crashes, emergency vehicles, flooding, debris) in dashcam
-video, and drivers behind get a reroute-or-stay alert before they reach the scene.
+![Warning card on /sim](docs/sim-warning.png)
+
+## What it does
+
+- Watches dashcam clips and detects road incidents: crashes, emergency vehicles, debris, road work.
+- Cross-checks every AI claim against tracked objects, so the evidence is visible, not a black box.
+- Predicts how long until the road clears, as an honest range that narrows as more cameras pass.
+- Warns the driver ahead of the scene with three scored options: stay, reroute, or stop and wait.
+- Respects the driver's choice across multiple incidents: no flip-flopping, and an offer to return when the road clears.
+
+## How it works
+
+```mermaid
+flowchart LR
+    A[Dashcam clip] --> B[SAM 3.1: find + track objects]
+    B --> C[Muse Spark: scene verdict]
+    B --> D[Evidence cross-check]
+    C --> D
+    D --> E[Muse Wonder agent: stage + clearance range]
+    E --> F[Guard: verify evidence + rules]
+    F --> G[Route decision: stay / reroute / wait]
+```
+
+1. **SAM 3.1** finds and tracks objects in the clip (cars, responders, cones, people) and counts them.
+2. **Muse Spark** reads the scene and returns a structured verdict: incident type, severity, responders, evidence timestamps.
+3. The **cross-check** matches each verdict claim against the SAM tracks (supported / unverified / conflict).
+4. The **Muse Wonder agent** tracks the incident across camera reports and returns its stage plus a clearance range.
+5. The **guard** verifies the agent's evidence, enforces range rules, and falls back to planning defaults when unsure.
+6. The **route engine** scores stay / reroute / stop-and-wait against the clearance range and the driver's active plan.
+
+Faces and license plates are blurred in every clip a person sees; the models analyze the unblurred footage.
+
+## Meta models and their jobs
+
+| Model | Job |
+| ---- | --- |
+| SAM 3.1 (`sam-3.1`) | Find and track objects; true counts from stills; blur faces and plates |
+| Muse Spark 1.3 (`muse-spark-1.3-contributor`) | Scene verdict: incident type, severity, responders, evidence |
+| Muse Wonder (`muse-wonder-1.0`) | Incident agent: stage, clearance range, cited evidence, driver wording |
+| Built with Muse Code | This repo was written with Muse Code |
+
+Input $4.00 / cached $0.20 / output $20.00 per 1M tokens for Muse Wonder (2026-10-27);
+SAM 3.1 bills per video frame ($0.20 per 1,000 frames, minimum 50 frames per request).
+Every real API call is appended to `data/ledger.jsonl`; uploads and results are cached
+under `data/cache/` so repeat runs are free, and `data/snapshot/` ships the demo's
+results so a fresh deploy replays at $0.
+
+## Evaluation
+
+Verdict accuracy on 19 labeled clips ([full report](data/eval/batch-report.md)):
+
+- Incident detected: **19/19**, type right: **18/19**, responders right: **72/76**
+- Zero false alarms on **8** normal-traffic clips
+
+Agent check (`npx tsx scripts/agent-check.ts`, 7/7 PASS):
+
+- Stages never go backward across the 4-report demo sequence, ending `cleared`
+- The clearance range narrows report by report: likely 72 → 36 → 10 min (55–95 → 27–46 → 6–15)
+- A single night report gets `low` confidence and a wider range than a clear day report
+- The guard keeps the stage from moving backward on conflicting reports and notes the conflict
+
+## How the clearance time is estimated
+
+These are planning estimates, not learned from real clearance records:
+
+1. Start from a **planning default** range for the incident type and stage
+   (e.g. crash with no responders yet: about 55 min, range 40–75).
+2. The **agent** adjusts from that baseline only with evidence it cites, and says
+   what sighting would narrow the range next.
+3. The **guard** enforces the rules: ordered ranges, width limits, no backward
+   stages, responder claims need responder evidence — else it widens the range
+   and says why.
+
+The headline ("Clears in about 35 min") counts down as time passes; if the range
+runs out with no "cleared" report, the card says so instead of declaring it clear.
+
+## Compared with today's maps apps
+
+| | Today's maps apps | Daari Sentinel |
+| --- | --- | --- |
+| Reporting | People tap to report | The camera sees it |
+| Proof | None | Evidence frames you can play |
+| Stage | Just "crash" | No responders → police → tow → cleared |
+| Clearance | Inferred from traffic speed | Predicted from the scene, as a range |
+| Removal | Votes and timers | A camera sees it clear |
+| Decision | A faster route | Stay / reroute / wait, plus a decide-by exit |
+
+## Honest limitations
+
+- The demo uses stock footage as stand-ins for one incident across reports.
+- SAM's video mode caps at 16 tracked objects per frame; we add uncapped still-frame counts for cars, trucks and people.
+- Clearance calibration is planning defaults plus agent judgment, not fitted to real clearance records.
+- This is a simulation with scripted camera passes, not a live fleet.
 
 ## Built during the hackathon
 
@@ -29,47 +119,23 @@ Commit messages before this point say 'Day 1–3'; these were build steps, all c
 | Oct 27 | Step 5: Muse Wonder incident agent with verified evidence and honest ranges |
 | Oct 27 | Step 6: calibrated clearance times, clickable evidence, instant reroute feedback |
 | Oct 27 | Step 6b: active route plans, multiple incidents, no flip-flopping |
+| Oct 28 | Step 7: privacy blur, demo snapshot, judge README |
 
-## Meta models used
+## Run locally
 
-- SAM 3.1 (`sam-3.1`) — open-vocabulary video segmentation and tracking. One
-  short noun phrase per request (e.g. `crashed car`); tracked boxes are drawn
-  over the playing clip in the Perception Lab.
-- Muse Spark 1.3 (`muse-spark-1.3-contributor`) — watches the clip and returns
-  a structured scene verdict (incident type, severity, responders, evidence
-  timestamps), cross-checked against the SAM detections on the same clip.
-- Muse Wonder (`muse-wonder-1.0`, standard — no contributor variant on Model
-  API) — tracks one incident across camera reports and returns a verified
-  stage plus an honest clearance range, guarded evidence, and driver wording.
-  Input $4.00 / cached $0.20 / output $20.00 per 1M tokens (2026-10-27).
-
-## How to run
-
-Prerequisites: Windows + PowerShell, Node >= 22.9, `ffmpeg` and `ffprobe` on
-PATH (e.g. `winget install Gyan.FFmpeg`).
+Prerequisites: Windows + PowerShell, Node >= 22.9, `ffmpeg` on PATH
+(e.g. `winget install Gyan.FFmpeg`).
 
 ```powershell
 npm install
-Copy-Item .env.example .env.local   # then put your real key in .env.local
+Copy-Item .env.example .env.local   # then put your real keys in .env.local
+npm run dev
 ```
 
-1. Drop a raw dashcam clip into `clips/raw/`.
-2. Prep it (trims to 30 s, 10 fps, max 1280 px wide, faststart):
-   ```powershell
-   npx tsx scripts/prep-clip.ts <your-clip.mp4>
-   # or prep everything in clips/raw/:
-   npx tsx scripts/prep-clip.ts all
-   ```
-3. Start the app and open the lab:
-   ```powershell
-   npm run dev
-   ```
-   Open [http://localhost:3000/lab](http://localhost:3000/lab) in your browser,
-   pick the clip, and click Analyze.
-
-Costs: SAM 3.1 bills per video frame ($0.20 per 1,000 frames, minimum 50 frames
-per request). Every real API call is appended to `data/ledger.jsonl`; uploads
-and SAM results are cached under `data/cache/` so repeat runs are free.
+Open [http://localhost:3000/lab](http://localhost:3000/lab) for the perception lab
+or [http://localhost:3000/sim](http://localhost:3000/sim) for the driving simulation.
+The demo replays from the committed snapshot at $0; set `LIVE_CALLS=true` to allow
+fresh API calls.
 
 ## Footage credits
 

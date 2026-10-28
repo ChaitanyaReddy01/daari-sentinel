@@ -1,6 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { assertLiveCalls, readSnapshotJson } from './snapshot';
+
 /**
  * Server-only Places API (New) client: details + nearby search.
  * Never import from client components.
@@ -63,8 +65,10 @@ export async function searchStops(lat: number, lng: number): Promise<NearbyStop[
     const parsed = JSON.parse(fs.readFileSync(cachePath, 'utf8')) as NearbyStop[];
     if (Array.isArray(parsed)) return parsed;
   } catch {
-    // Cache miss: fetch below.
+    const snap = readSnapshotJson<NearbyStop[]>(path.join('places', `nearby-${key}.json`));
+    if (snap && Array.isArray(snap)) return snap;
   }
+  assertLiveCalls(`Places nearby ${key}`);
   const data = (await googleFetch(
     NEARBY_URL,
     {

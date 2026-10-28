@@ -4,7 +4,7 @@ import path from 'node:path';
 
 import { z } from 'zod';
 
-import { ClipName, errMessage, hashFile, jsonError, loadPreppedClip, preppedVideoPath } from '@/lib/clips';
+import { ClipName, blurredVideoPath, errMessage, hashFile, jsonError, loadPreppedClip } from '@/lib/clips';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -33,11 +33,16 @@ export async function GET(req: Request): Promise<Response> {
     );
   }
 
+  // Thumbnails come from the BLURRED clip, keyed by its hash, so no cached
+  // thumbnail can ever show an unblurred face or plate.
   let hash: string;
   try {
-    hash = hashFile(preppedVideoPath(clip));
+    hash = hashFile(blurredVideoPath(clip));
   } catch (err) {
-    return jsonError(`Could not read clip file: ${errMessage(err)}`, 500);
+    return jsonError(
+      `No blurred clip for "${clip}" (run scripts/blur-run.ts then scripts/blur-clips.ts): ${errMessage(err)}`,
+      500,
+    );
   }
 
   const duration = clipInfo.frameCount / clipInfo.fps;
@@ -53,7 +58,7 @@ export async function GET(req: Request): Promise<Response> {
           '-ss',
           t.toFixed(3),
           '-i',
-          preppedVideoPath(clip),
+          blurredVideoPath(clip),
           '-frames:v',
           '1',
           '-q:v',

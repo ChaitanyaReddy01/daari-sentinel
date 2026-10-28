@@ -31,6 +31,11 @@ export function preppedVideoPath(clip: string): string {
   return path.join(preppedDir(), `${clip}.mp4`);
 }
 
+/** Blurred display copy (faces + plates washed out). People see this; models see prepped. */
+export function blurredVideoPath(clip: string): string {
+  return path.join(process.cwd(), 'public', 'clips', 'blurred', `${clip}.mp4`);
+}
+
 export function preppedMetaPath(clip: string): string {
   return path.join(preppedDir(), `${clip}.json`);
 }

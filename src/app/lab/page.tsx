@@ -72,6 +72,7 @@ const RESPONDER_BADGES = [
 
 const PRICE_PER_1K_FRAMES = 0.2;
 const MIN_BILLABLE_FRAMES = 50;
+const BLUR_DEBUG_CONCEPTS = ['face', 'license plate'];
 
 function estimateFor(frameCount: number, uncachedConcepts: number): number {
   return (
@@ -113,6 +114,9 @@ export default function LabPage() {
   const [loading, setLoading] = useState(true);
 
   const [clip, setClip] = useState('');
+  const [showBlur, setShowBlur] = useState(false);
+  const [blurResults, setBlurResults] = useState<Record<string, SamResult>>({});
+  const [blurNote, setBlurNote] = useState<string | null>(null);
   const [checked, setChecked] = useState<string[]>([]);
   const [summaries, setSummaries] = useState<SamSummary[] | null>(null);
   const [results, setResults] = useState<Record<string, SamResult>>({});
@@ -159,6 +163,20 @@ export default function LabPage() {
         concept: selected,
       }
     : null;
+
+  // Debug-only blur coverage overlay (face / license plate boxes).
+  const blurRef = useRef<
+    { boxes: SamBox[]; width: number; height: number; fps: number; concept: string }[]
+  >([]);
+  blurRef.current = showBlur
+    ? BLUR_DEBUG_CONCEPTS.filter((c) => blurResults[c]).map((c) => ({
+        boxes: blurResults[c].boxes,
+        width: blurResults[c].width,
+        height: blurResults[c].height,
+        fps: blurResults[c].fps,
+        concept: c,
+      }))
+    : [];
 
   useEffect(() => {
     let cancelled = false;
@@ -211,29 +229,46 @@ export default function LabPage() {
       if (!ctx) return;
       ctx.clearRect(0, 0, w, h);
       const ov = overlayRef.current;
-      if (!ov || ov.width <= 0 || ov.height <= 0 || ov.fps <= 0) return;
-      const frame = Math.floor(video.currentTime * ov.fps);
-      const sx = w / ov.width;
-      const sy = h / ov.height;
-      ctx.font = '12px system-ui, sans-serif';
-      ctx.lineWidth = 2;
-      for (const b of ov.boxes) {
+      if (ov && ov.width > 0 && ov.height > 0 && ov.fps > 0) {
+        drawBoxes(ctx, ov, false);
+      }
+      for (const b of blurRef.current) {
+        if (b.width > 0 && b.height > 0 && b.fps > 0) drawBoxes(ctx, b, true);
+      }
+    };
+
+    function drawBoxes(
+      c: CanvasRenderingContext2D,
+      o: { boxes: SamBox[]; width: number; height: number; fps: number; concept: string },
+      dashed: boolean,
+    ): void {
+      const v = videoRef.current;
+      const cv = canvasRef.current;
+      if (!v || !cv) return;
+      const frame = Math.floor(v.currentTime * o.fps);
+      const sx = cv.width / o.width;
+      const sy = cv.height / o.height;
+      c.font = '12px system-ui, sans-serif';
+      c.lineWidth = 2;
+      c.setLineDash(dashed ? [6, 4] : []);
+      for (const b of o.boxes) {
         if (b.frame !== frame) continue;
         const x = b.x1 * sx;
         const y = b.y1 * sy;
         const bw = (b.x2 - b.x1) * sx;
         const bh = (b.y2 - b.y1) * sy;
-        ctx.strokeStyle = '#fbbf24';
-        ctx.strokeRect(x, y, bw, bh);
-        const label = `${ov.concept} #${b.id}${b.c === null ? '' : ` ${b.c.toFixed(2)}`}`;
-        const tw = ctx.measureText(label).width;
+        c.strokeStyle = dashed ? '#f0abfc' : '#fbbf24';
+        c.strokeRect(x, y, bw, bh);
+        const label = `${o.concept} #${b.id}${b.c === null ? '' : ` ${b.c.toFixed(2)}`}`;
+        const tw = c.measureText(label).width;
         const ly = y - 18 >= 0 ? y - 18 : y;
-        ctx.fillStyle = 'rgba(0, 0, 0, 0.75)';
-        ctx.fillRect(x, ly, tw + 8, 18);
-        ctx.fillStyle = '#fde68a';
-        ctx.fillText(label, x + 4, ly + 13);
+        c.fillStyle = 'rgba(0, 0, 0, 0.75)';
+        c.fillRect(x, ly, tw + 8, 18);
+        c.fillStyle = dashed ? '#fae8ff' : '#fde68a';
+        c.fillText(label, x + 4, ly + 13);
       }
-    };
+      c.setLineDash([]);
+    }
     raf = requestAnimationFrame(draw);
     return () => cancelAnimationFrame(raf);
   }, []);
@@ -245,10 +280,42 @@ export default function LabPage() {
     );
   };
 
+  // Fetch blur-debug boxes when the toggle is on (cached SAM reads, $0).
+  useEffect(() => {
+    if (!showBlur || !clip) return;
+    let cancelled = false;
+    (async () => {
+      const next: Record<string, SamResult> = {};
+      for (const concept of BLUR_DEBUG_CONCEPTS) {
+        try {
+          const res = await fetch(
+            `/api/lab/result?clip=${encodeURIComponent(clip)}&concept=${encodeURIComponent(concept)}`,
+          );
+          if (!res.ok) continue;
+          next[concept] = (await res.json()) as SamResult;
+        } catch {
+          // Leave this concept out; the note below explains.
+        }
+      }
+      if (cancelled) return;
+      setBlurResults(next);
+      setBlurNote(
+        Object.keys(next).length === 0
+          ? 'No blur data for this clip — run scripts/blur-run.ts.'
+          : null,
+      );
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [showBlur, clip]);
+
   const onClipChange = (name: string) => {
     setClip(name);
     setSummaries(null);
     setResults({});
+    setBlurResults({});
+    setBlurNote(null);
     setTrueCounts({});
     setPending(null);
     setLastRunCost(null);
@@ -599,13 +666,27 @@ export default function LabPage() {
               <video
                 key={clip}
                 ref={videoRef}
-                src={`/clips/prepped/${encodeURIComponent(clip)}.mp4`}
+                src={`/clips/blurred/${encodeURIComponent(clip)}.mp4`}
                 controls
                 playsInline
                 className="block h-auto w-full"
               />
               <canvas ref={canvasRef} className="pointer-events-none absolute inset-0 h-full w-full" />
             </div>
+            <p className="mt-1 text-xs text-stone-500">
+              Privacy-blurred copy (faces + plates washed out). Models analyze the unblurred clip.
+            </p>
+            <label className="mt-2 flex cursor-pointer items-center gap-2 text-sm text-stone-600">
+              <input
+                type="checkbox"
+                checked={showBlur}
+                onChange={(e) => setShowBlur(e.target.checked)}
+                className="h-4 w-4"
+              />
+              Show blur boxes
+              <span className="text-xs text-stone-400">(debug: face / license plate coverage)</span>
+            </label>
+            {showBlur && blurNote && <p className="mt-1 text-xs text-amber-700">{blurNote}</p>}
           </section>
 
           <section className={`order-3 min-w-0 ${summaries ? 'lg:order-2' : 'lg:col-span-2'}`}>

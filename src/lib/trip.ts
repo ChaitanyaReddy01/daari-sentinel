@@ -2,6 +2,8 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { assertLiveCalls, readSnapshotJson } from './snapshot';
+
 /**
  * Server-only trip routing: origin → destination with alternatives and step
  * instructions. Never import from client components.
@@ -123,9 +125,21 @@ export async function getTrip(req: TripRequest): Promise<{ routes: TripRoute[] }
       return legacy;
     }
   } catch {
-    // No legacy entry: fetch below.
+    // No legacy entry: snapshot, then fetch below.
+  }
+  const snap = readSnapshotJson<{ routes: TripRoute[] }>(
+    path.join('routes', `trip3-${cacheKey}.json`),
+  );
+  if (
+    snap &&
+    Array.isArray(snap.routes) &&
+    snap.routes.length > 0 &&
+    snap.routes.every((r) => r.steps.every((s) => typeof s.durationSeconds === 'number'))
+  ) {
+    return snap;
   }
 
+  assertLiveCalls(`Routes API trip ${cacheKey.slice(0, 12)}…`);
   const body: Record<string, unknown> = {
     origin,
     destination,

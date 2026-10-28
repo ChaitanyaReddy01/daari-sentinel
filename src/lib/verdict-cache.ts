@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { verdictCostUSD } from './config';
+import { readSnapshotJson } from './snapshot';
 import { PROMPT_VERSION, type Verdict } from './verdict';
 
 /**
@@ -30,16 +31,20 @@ export function verdictCachePath(hash: string): string {
   return path.join(VERDICT_DIR, `${hash}.json`);
 }
 
-/** Read a cached verdict. Version mismatch counts as a miss (re-runs it). */
+/**
+ * Read a cached verdict: data/cache/ first, then the committed snapshot.
+ * Version mismatch counts as a miss (re-runs it).
+ */
 export function readVerdictCache(hash: string): VerdictCachedResult | null {
+  let parsed: VerdictCachedResult | null = null;
   try {
     const raw = fs.readFileSync(verdictCachePath(hash), 'utf8');
-    const parsed = JSON.parse(raw) as VerdictCachedResult;
-    if (!parsed || parsed.promptVersion !== PROMPT_VERSION || !parsed.verdict) return null;
-    return parsed;
+    parsed = JSON.parse(raw) as VerdictCachedResult;
   } catch {
-    return null;
+    parsed = readSnapshotJson<VerdictCachedResult>(path.join('verdict', `${hash}.json`));
   }
+  if (!parsed || parsed.promptVersion !== PROMPT_VERSION || !parsed.verdict) return null;
+  return parsed;
 }
 
 /**

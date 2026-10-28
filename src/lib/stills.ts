@@ -9,6 +9,7 @@ import { uploadClip } from './files';
 import { hashFile, loadPreppedClip, preppedVideoPath } from './clips';
 import { slug } from './sam-cache';
 import { SAM_MODEL } from './sam';
+import { assertLiveCalls, readSnapshotJson } from './snapshot';
 
 /**
  * True-count pass: SAM video tracking caps at 16 objects per frame, so for
@@ -73,15 +74,18 @@ export function extractStill(videoPath: string, frame: number, fps: number, outP
   }
 }
 
-/** Read a cached still count. Null on miss or corrupt entry. */
+/** Read a cached still count (data/cache/, then the snapshot). Null on miss. */
 export function readStillsCount(hash: string, frame: number, concept: string): number | null {
+  let parsed: { count?: unknown } | null = null;
   try {
     const raw = fs.readFileSync(stillCountPath(hash, frame, concept), 'utf8');
-    const parsed = JSON.parse(raw) as { count?: unknown };
-    return typeof parsed.count === 'number' && Number.isFinite(parsed.count) ? parsed.count : null;
+    parsed = JSON.parse(raw) as { count?: unknown };
   } catch {
-    return null;
+    parsed = readSnapshotJson<{ count?: unknown }>(
+      path.join('sam-image', hash, `f${frame}`, `${slug(concept)}.json`),
+    );
   }
+  return typeof parsed?.count === 'number' && Number.isFinite(parsed.count) ? parsed.count : null;
 }
 
 export interface StillsLedgerEntry {
@@ -121,6 +125,7 @@ export async function runStillsCount({
 
   const hit = readStillsCount(hash, frame, concept);
   if (hit !== null) return { count: hit, cached: true };
+  assertLiveCalls(`Stills count "${concept}" f${frame} on ${clip}`);
 
   const imagePath = stillImagePath(hash, frame);
   if (!fs.existsSync(imagePath)) {

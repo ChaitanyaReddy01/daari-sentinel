@@ -41,6 +41,10 @@ data/ledger.jsonl
 clips/raw/
 public/clips/prepped/synth-*
 
+# self-recorded footage: commit ONLY the blurred version, never the original
+clips/own/
+public/clips/blurred/synth-*
+
 # vercel
 .vercel
 
