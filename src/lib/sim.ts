@@ -229,13 +229,15 @@ export interface DemoEvent {
   atMin: number;
   kind: 'report' | 'followup';
   clip: string;
+  /** Step 5: 2nd and 4th reports come from northbound (oncoming) cars. */
+  from: 'same' | 'oncoming';
 }
 
 export const DEMO_EVENTS: DemoEvent[] = [
-  { atMin: 0, kind: 'report', clip: 'crash-1' },
-  { atMin: 12, kind: 'followup', clip: 'car-tow-ambulance-police-1' },
-  { atMin: 25, kind: 'followup', clip: 'car-police-tow-1' },
-  { atMin: 40, kind: 'followup', clip: 'dash-cam-car-1' },
+  { atMin: 0, kind: 'report', clip: 'crash-1', from: 'same' },
+  { atMin: 12, kind: 'followup', clip: 'car-tow-ambulance-police-1', from: 'oncoming' },
+  { atMin: 25, kind: 'followup', clip: 'car-police-tow-1', from: 'same' },
+  { atMin: 40, kind: 'followup', clip: 'dash-cam-car-1', from: 'oncoming' },
 ];
 
 /** "t+MM:SS" for the sim clock. */

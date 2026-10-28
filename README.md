@@ -26,6 +26,7 @@ Commit messages before this point say 'Day 1–3'; these were build steps, all c
 | Oct 27 | Step 4b: realistic jam delay, exit-based decide-by, named reroutes |
 | Oct 27 | Step 4c: fix missing clip list on /sim |
 | Oct 27 | Step 4d: fix map zoom with follow mode |
+| Oct 27 | Step 5: Muse Wonder incident agent with verified evidence and honest ranges |
 
 ## Meta models used
 
@@ -35,6 +36,10 @@ Commit messages before this point say 'Day 1–3'; these were build steps, all c
 - Muse Spark 1.3 (`muse-spark-1.3-contributor`) — watches the clip and returns
   a structured scene verdict (incident type, severity, responders, evidence
   timestamps), cross-checked against the SAM detections on the same clip.
+- Muse Wonder (`muse-wonder-1.0`, standard — no contributor variant on Model
+  API) — tracks one incident across camera reports and returns a verified
+  stage plus an honest clearance range, guarded evidence, and driver wording.
+  Input $4.00 / cached $0.20 / output $20.00 per 1M tokens (2026-10-27).
 
 ## How to run
 

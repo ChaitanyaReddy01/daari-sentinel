@@ -14,6 +14,7 @@ const FIELD_MASK = [
   'routes.description',
   'routes.polyline.encodedPolyline',
   'routes.legs.steps.distanceMeters',
+  'routes.legs.steps.staticDuration',
   'routes.legs.steps.navigationInstruction',
 ].join(',');
 const CACHE_DIR = path.join(process.cwd(), 'data', 'cache', 'routes');
@@ -22,6 +23,8 @@ const LEDGER_PATH = path.join(process.cwd(), 'data', 'ledger.jsonl');
 export interface TripStep {
   distanceMeters: number;
   instruction: string | null;
+  /** Step drive time from the Routes API (staticDuration), seconds. */
+  durationSeconds: number;
 }
 
 export interface TripRoute {
@@ -77,13 +80,50 @@ export async function getTrip(req: TripRequest): Promise<{ routes: TripRoute[] }
     .createHash('sha1')
     .update(JSON.stringify({ origin, destination, via: req.via ?? null }))
     .digest('hex');
-  // trip2-: P4b added routes.description; only trip-* entries are re-fetched.
-  const cachePath = path.join(CACHE_DIR, `trip2-${cacheKey}.json`);
+  // trip3-: Step 5 added legs.steps.staticDuration; trip2- entries lack it.
+  const cachePath = path.join(CACHE_DIR, `trip3-${cacheKey}.json`);
   try {
     const parsed = JSON.parse(fs.readFileSync(cachePath, 'utf8')) as { routes: TripRoute[] };
-    if (parsed && Array.isArray(parsed.routes) && parsed.routes.length > 0) return parsed;
+    if (parsed && Array.isArray(parsed.routes) && parsed.routes.length > 0) {
+      if (parsed.routes.every((r) => r.steps.every((s) => typeof s.durationSeconds === 'number'))) {
+        return parsed;
+      }
+    }
   } catch {
-    // Cache miss: fetch below.
+    // Cache miss: migrate or fetch below.
+  }
+  // Migrate trip2- entries by prorating the total duration over step
+  // distances, so existing caches keep working without a refetch.
+  try {
+    const legacy = JSON.parse(
+      fs.readFileSync(path.join(CACHE_DIR, `trip2-${cacheKey}.json`), 'utf8'),
+    ) as { routes: TripRoute[] };
+    if (legacy && Array.isArray(legacy.routes) && legacy.routes.length > 0) {
+      for (const r of legacy.routes) {
+        const totalDist = r.steps.reduce((a, s) => a + (s.distanceMeters || 0), 0);
+        let assigned = 0;
+        r.steps.forEach((s, i) => {
+          if (typeof s.durationSeconds === 'number' && s.durationSeconds > 0) {
+            assigned += s.durationSeconds;
+            return;
+          }
+          if (i < r.steps.length - 1 && totalDist > 0 && r.durationSeconds > 0) {
+            s.durationSeconds = Math.max(
+              1,
+              Math.round((r.durationSeconds * (s.distanceMeters || 0)) / totalDist),
+            );
+            assigned += s.durationSeconds;
+          } else {
+            s.durationSeconds = Math.max(0, r.durationSeconds - assigned);
+          }
+        });
+      }
+      fs.mkdirSync(CACHE_DIR, { recursive: true });
+      fs.writeFileSync(cachePath, JSON.stringify(legacy));
+      return legacy;
+    }
+  } catch {
+    // No legacy entry: fetch below.
   }
 
   const body: Record<string, unknown> = {
@@ -129,6 +169,7 @@ export async function getTrip(req: TripRequest): Promise<{ routes: TripRoute[] }
       legs?: Array<{
         steps?: Array<{
           distanceMeters?: number;
+          staticDuration?: string;
           navigationInstruction?: { instructions?: string };
         }>;
       }>;
@@ -145,12 +186,14 @@ export async function getTrip(req: TripRequest): Promise<{ routes: TripRoute[] }
     const steps: TripStep[] = [];
     for (const leg of r.legs ?? []) {
       for (const s of leg.steps ?? []) {
+        const stepSeconds = /^(-?\d+)s$/.exec(s.staticDuration ?? '')?.[1];
         steps.push({
           distanceMeters: typeof s.distanceMeters === 'number' ? s.distanceMeters : 0,
           instruction:
             typeof s.navigationInstruction?.instructions === 'string'
               ? s.navigationInstruction.instructions
               : null,
+          durationSeconds: stepSeconds ? parseInt(stepSeconds, 10) : 0,
         });
       }
     }

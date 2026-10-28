@@ -293,6 +293,84 @@ export function routesRemainSec(totalDurationSec: number, totalLengthM: number, 
   return Math.max(0, totalDurationSec * (1 - frac));
 }
 
+/* ---- Step 5: per-step drive speeds (ETA match) ---- */
+
+export interface StepSpeed {
+  s0: number;
+  s1: number;
+  mps: number;
+}
+
+/**
+ * Step speeds mapped onto route arclength. Steps partition the route by
+ * distance; each drives at distance ÷ duration. Fallback covers 0-duration.
+ */
+export function buildStepSpeeds(
+  steps: { distanceMeters: number; durationSeconds?: number }[],
+  geomLength: number,
+  fallbackMps: number,
+): StepSpeed[] {
+  const totalDist = steps.reduce((a, s) => a + Math.max(0, s.distanceMeters || 0), 0);
+  const scale = totalDist > 0 && geomLength > 0 ? geomLength / totalDist : 1;
+  const out: StepSpeed[] = [];
+  let cum = 0;
+  for (const st of steps) {
+    const segLen = Math.max(0, st.distanceMeters || 0) * scale;
+    const dur = typeof st.durationSeconds === 'number' ? st.durationSeconds : 0;
+    const mps =
+      dur > 0 && (st.distanceMeters || 0) > 0
+        ? Math.min(50, Math.max(1, (st.distanceMeters || 0) / dur))
+        : fallbackMps;
+    out.push({ s0: cum, s1: cum + segLen, mps });
+    cum += segLen;
+  }
+  return out;
+}
+
+/** Step speed at arclength s (fallback past the end). */
+export function speedAtSpeeds(speeds: StepSpeed[], s: number, fallbackMps: number): number {
+  for (const seg of speeds) {
+    if (s >= seg.s0 && s < seg.s1) return seg.mps;
+  }
+  return speeds.length > 0 ? speeds[speeds.length - 1].mps : fallbackMps;
+}
+
+/** Sim seconds from s to targetS through zones at step speeds. */
+export function projectToSWithSpeeds(
+  s: number,
+  targetS: number,
+  zones: SlowZone[],
+  speeds: StepSpeed[],
+  fallbackMps: number,
+): number {
+  let t = 0;
+  let x = Math.min(s, targetS);
+  while (x < targetS) {
+    const chunk = Math.min(100, targetS - x);
+    const base = speedAtSpeeds(speeds, x + chunk / 2, fallbackMps);
+    t += chunk / Math.max(speedInZones(base, x + chunk / 2, zones), 1);
+    x += chunk;
+  }
+  return t;
+}
+
+/** Free-flow remaining seconds from s to length at step speeds. */
+export function remainingWithSpeeds(
+  s: number,
+  speeds: StepSpeed[],
+  fallbackMps: number,
+  length: number,
+): number {
+  let t = 0;
+  let x = Math.min(s, length);
+  while (x < length) {
+    const chunk = Math.min(100, length - x);
+    t += chunk / Math.max(speedAtSpeeds(speeds, x + chunk / 2, fallbackMps), 1);
+    x += chunk;
+  }
+  return t;
+}
+
 /* ---- P4b: exit-based decide-by and route names ---- */
 
 export interface StepLike {

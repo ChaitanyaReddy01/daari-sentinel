@@ -6,6 +6,13 @@
 export const MUSE_SPARK_MODEL =
   process.env.MUSE_SPARK_MODEL?.trim() || 'muse-spark-1.3-contributor';
 
+/**
+ * Muse Wonder incident agent (Step 5). No contributor variant exists on Model
+ * API (docs: "Contributor mode isn't available for Muse Wonder on Model API"),
+ * so the standard id is the only choice.
+ */
+export const MUSE_WONDER_MODEL = process.env.MUSE_WONDER_MODEL?.trim() || 'muse-wonder-1.0';
+
 const EFFORTS = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
 export type ReasoningEffort = (typeof EFFORTS)[number];
 
@@ -18,12 +25,22 @@ function parseEffort(value: string | undefined): ReasoningEffort {
 
 export const REASONING_EFFORT = parseEffort(process.env.REASONING_EFFORT);
 
+/** Agent reasoning: text-only JSON task, so 'low' unless overridden. */
+export const WONDER_REASONING_EFFORT: ReasoningEffort =
+  process.env.WONDER_REASONING_EFFORT &&
+  (EFFORTS as readonly string[]).includes(process.env.WONDER_REASONING_EFFORT)
+    ? (process.env.WONDER_REASONING_EFFORT as ReasoningEffort)
+    : 'low';
+
 /**
  * Reasoning shares the output budget, so this must leave room for both the
  * private reasoning tokens and the visible answer. Per the docs, at least
  * 4000 for Muse Spark video requests.
  */
 export const SPARK_MAX_OUTPUT_TOKENS = 4000;
+
+/** Wonder agent output budget (reasoning shares it, same as Spark). */
+export const WONDER_MAX_OUTPUT_TOKENS = 4000;
 
 export interface TokenPrices {
   inputPer1M: number;
@@ -47,20 +64,35 @@ const SPARK_PRICES: Record<string, TokenPrices> = {
     outputPer1M: 0.2,
     asOf: '2026-10-27',
   },
+  'muse-wonder-1.0': {
+    inputPer1M: 4.0,
+    cachedInputPer1M: 0.2,
+    outputPer1M: 20.0,
+    asOf: '2026-10-27',
+  },
 };
 
-/** Prices for a model id; unknown ids fall back to standard pricing. */
+/** Prices for a model id; unknown ids fall back to their family standard. */
 export function pricesFor(model: string): TokenPrices {
-  return (
-    SPARK_PRICES[model] ?? {
-      inputPer1M: 1.25,
-      cachedInputPer1M: 0.15,
-      outputPer1M: 4.25,
+  const hit = SPARK_PRICES[model];
+  if (hit) return hit;
+  if (model.startsWith('muse-wonder')) {
+    return {
+      inputPer1M: 4.0,
+      cachedInputPer1M: 0.2,
+      outputPer1M: 20.0,
       asOf: '2026-10-27',
-    }
-  );
+    };
+  }
+  return {
+    inputPer1M: 1.25,
+    cachedInputPer1M: 0.15,
+    outputPer1M: 4.25,
+    asOf: '2026-10-27',
+  };
 }
 
+/** Token cost for any text model (verdicts and the Wonder agent share it). */
 export function verdictCostUSD(
   model: string,
   inputTokens: number,
