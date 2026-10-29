@@ -130,51 +130,43 @@ function num(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : 0;
 }
 
+export type SparkVideoContent =
+  | { type: 'input_file'; file_id: string }
+  | { type: 'input_video'; video_url: string };
+
+export interface SparkVerdictOutcome {
+  verdict: Verdict;
+  inputTokens: number;
+  outputTokens: number;
+  cachedTokens: number;
+}
+
 /**
- * Ask Muse Spark for a structured scene verdict over a prepped clip, reusing
- * the cached Files API upload. Structured output first; JSON-only fallback if
- * the model rejects text.format; one validation retry; then a clear error.
+ * One structured scene verdict from Muse Spark. Structured output first;
+ * JSON-only fallback if the model rejects text.format; one validation
+ * retry; then a clear error. Shared by clip verdicts and /try URL verdicts.
  */
-export async function runVerdict({
-  clip,
-}: {
-  clip: string;
-}): Promise<{ result: VerdictCachedResult; cached: boolean }> {
-  const clipInfo = loadPreppedClip(clip);
-  if (!clipInfo) {
-    throw new Error(`Unknown clip "${clip}". Prep it first: npx tsx scripts/prep-clip.ts ${clip}`);
-  }
-  const videoPath = preppedVideoPath(clip);
-  const hash = preppedHash(clip);
-
-  const hit = readVerdictCache(hash);
-  if (hit) return { result: hit, cached: true };
-  assertLiveCalls(`Spark verdict on ${clip}`);
-
-  const fileId = await uploadClip(videoPath);
-  const baseUserText =
-    `${samHints(hash)}\n\nDescribe the scene using the schema. ` +
-    'The summary must be one sentence of at most 25 words, written for a driver; ' +
-    'put the longer scene description in details (max 80 words).';
-
+export async function requestSparkVerdict(args: {
+  video: SparkVideoContent;
+  baseUserText: string;
+}): Promise<SparkVerdictOutcome> {
+  const { video, baseUserText } = args;
   let totalIn = 0;
   let totalOut = 0;
   let totalCached = 0;
 
   const complete = async (userText: string, structured: boolean): Promise<string> => {
+    const message = {
+      type: 'message',
+      role: 'user',
+      content: [{ type: 'input_text', text: userText }, video],
+    };
     const response = await meta.responses.create({
       model: MUSE_SPARK_MODEL,
       instructions: SYSTEM_PROMPT,
-      input: [
-        {
-          type: 'message',
-          role: 'user',
-          content: [
-            { type: 'input_text', text: userText },
-            { type: 'input_file', file_id: fileId },
-          ],
-        },
-      ],
+      // input_video is API-supported but missing from the SDK types; the cast
+      // stays at this boundary.
+      input: [message] as unknown as Parameters<typeof meta.responses.create>[0]['input'],
       ...(structured
         ? {
             text: {
@@ -233,12 +225,59 @@ export async function runVerdict({
     }
   }
 
-  const estUSD = verdictCostUSD(MUSE_SPARK_MODEL, totalIn, totalOut, totalCached);
+  return {
+    verdict: checked.verdict,
+    inputTokens: totalIn,
+    outputTokens: totalOut,
+    cachedTokens: totalCached,
+  };
+}
+
+/**
+ * Ask Muse Spark for a structured scene verdict over a prepped clip, reusing
+ * the cached Files API upload.
+ */
+export async function runVerdict({
+  clip,
+}: {
+  clip: string;
+}): Promise<{ result: VerdictCachedResult; cached: boolean }> {
+  const clipInfo = loadPreppedClip(clip);
+  if (!clipInfo) {
+    throw new Error(`Unknown clip "${clip}". Prep it first: npx tsx scripts/prep-clip.ts ${clip}`);
+  }
+  const videoPath = preppedVideoPath(clip);
+  const hash = preppedHash(clip);
+
+  const hit = readVerdictCache(hash);
+  if (hit) return { result: hit, cached: true };
+  assertLiveCalls(`Spark verdict on ${clip}`);
+
+  const fileId = await uploadClip(videoPath);
+  const baseUserText =
+    `${samHints(hash)}\n\nDescribe the scene using the schema. ` +
+    'The summary must be one sentence of at most 25 words, written for a driver; ' +
+    'put the longer scene description in details (max 80 words).';
+  const outcome = await requestSparkVerdict({
+    video: { type: 'input_file', file_id: fileId },
+    baseUserText,
+  });
+
+  const estUSD = verdictCostUSD(
+    MUSE_SPARK_MODEL,
+    outcome.inputTokens,
+    outcome.outputTokens,
+    outcome.cachedTokens,
+  );
   const out: VerdictCachedResult = {
     promptVersion: PROMPT_VERSION,
     model: MUSE_SPARK_MODEL,
-    verdict: checked.verdict,
-    usage: { inputTokens: totalIn, outputTokens: totalOut, cachedInputTokens: totalCached },
+    verdict: outcome.verdict,
+    usage: {
+      inputTokens: outcome.inputTokens,
+      outputTokens: outcome.outputTokens,
+      cachedInputTokens: outcome.cachedTokens,
+    },
     estUSD,
   };
   writeCacheFile(verdictCachePath(hash), JSON.stringify(out));
@@ -247,10 +286,39 @@ export async function runVerdict({
     model: MUSE_SPARK_MODEL,
     hash,
     kind: 'verdict',
-    inputTokens: totalIn,
-    outputTokens: totalOut,
+    inputTokens: outcome.inputTokens,
+    outputTokens: outcome.outputTokens,
     estUSD,
   });
 
   return { result: out, cached: false };
+}
+
+/**
+ * Scene verdict over a remote video URL (/try flow). No cache, no ledger
+ * here — the caller records the real cost under its own ledger kind.
+ */
+export async function runVerdictFromUrl({
+  videoUrl,
+  hintsText,
+}: {
+  videoUrl: string;
+  hintsText: string;
+}): Promise<SparkVerdictOutcome & { estUSD: number }> {
+  const baseUserText =
+    `${hintsText}\n\nDescribe the scene using the schema. ` +
+    'The summary must be one sentence of at most 25 words, written for a driver; ' +
+    'put the longer scene description in details (max 80 words). ' +
+    "First decide if this shows a road, street, highway, or traffic scene. If it does not, set incident=false and type='none', and begin the summary with exactly 'Not road footage:'.";
+  const outcome = await requestSparkVerdict({
+    video: { type: 'input_video', video_url: videoUrl },
+    baseUserText,
+  });
+  const estUSD = verdictCostUSD(
+    MUSE_SPARK_MODEL,
+    outcome.inputTokens,
+    outcome.outputTokens,
+    outcome.cachedTokens,
+  );
+  return { ...outcome, estUSD };
 }

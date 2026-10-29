@@ -10,6 +10,12 @@ import * as simRoutes from '@/server/handlers/sim-routes';
 import * as simStops from '@/server/handlers/sim-stops';
 import * as simThumbnail from '@/server/handlers/sim-thumbnail';
 import * as simTrip from '@/server/handlers/sim-trip';
+import * as tryAssess from '@/server/handlers/try-assess';
+import * as tryDetect from '@/server/handlers/try-detect';
+import * as tryFinish from '@/server/handlers/try-finish';
+import * as tryStart from '@/server/handlers/try-start';
+import * as tryUploadToken from '@/server/handlers/try-upload-token';
+import * as tryVerdict from '@/server/handlers/try-verdict';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -35,6 +41,12 @@ const ROUTES: Record<string, { GET?: Handler; POST?: Handler }> = {
   'sim/stops': simStops,
   'sim/thumbnail': simThumbnail,
   'sim/trip': simTrip,
+  'try/assess': tryAssess,
+  'try/detect': tryDetect,
+  'try/finish': tryFinish,
+  'try/start': tryStart,
+  'try/upload-token': tryUploadToken,
+  'try/verdict': tryVerdict,
 };
 
 async function dispatch(req: Request, segments: string[]): Promise<Response> {

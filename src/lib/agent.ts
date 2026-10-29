@@ -205,7 +205,7 @@ async function appendAgentLedger(entry: {
   ts: string;
   model: string;
   hash: string;
-  kind: 'agent';
+  kind: string;
   inputTokens: number;
   outputTokens: number;
   cachedInputTokens: number;
@@ -256,6 +256,7 @@ async function storeAndLedger(args: {
   inputTokens: number;
   outputTokens: number;
   cachedInputTokens: number;
+  ledgerKind?: string;
 }): Promise<StoredAssessment> {
   const estUSD = verdictCostUSD(
     MUSE_WONDER_MODEL,
@@ -280,7 +281,7 @@ async function storeAndLedger(args: {
     ts: new Date().toISOString(),
     model: MUSE_WONDER_MODEL,
     hash: args.key,
-    kind: 'agent',
+    kind: args.ledgerKind ?? 'agent',
     inputTokens: args.inputTokens,
     outputTokens: args.outputTokens,
     cachedInputTokens: args.cachedInputTokens,
@@ -309,7 +310,10 @@ export function baselineFor(
  */
 export async function assessIncident(
   input: AssessIncidentInput,
+  opts?: { ledgerKind?: string; liveAuthorized?: boolean },
 ): Promise<{ result: StoredAssessment; cached: boolean }> {
+  const ledgerKind = opts?.ledgerKind ?? 'agent';
+  const liveAuthorized = opts?.liveAuthorized ?? false;
   if (!input.reports || input.reports.length === 0) {
     throw new Error('assessIncident needs at least one report.');
   }
@@ -329,7 +333,8 @@ export async function assessIncident(
   let meta: typeof import('./meta').meta;
   try {
     ({ meta } = await import('./meta'));
-    assertLiveCalls(`Wonder assessment ${key.slice(0, 12)}…`);
+    // /try authorizes its own live calls after quota+budget checks.
+    if (!liveAuthorized) assertLiveCalls(`Wonder assessment ${key.slice(0, 12)}…`);
   } catch (err) {
     if (err instanceof Error && err.message.includes('is not in the local snapshot')) throw err;
     const fb = buildFallbackAssessment({
@@ -346,6 +351,7 @@ export async function assessIncident(
         inputTokens: 0,
         outputTokens: 0,
         cachedInputTokens: 0,
+        ledgerKind,
       }),
       cached: false,
     };
@@ -448,6 +454,7 @@ export async function assessIncident(
             inputTokens: totalIn,
             outputTokens: totalOut,
             cachedInputTokens: totalCached,
+            ledgerKind,
           }),
           cached: false,
         };
@@ -472,6 +479,7 @@ export async function assessIncident(
             inputTokens: totalIn,
             outputTokens: totalOut,
             cachedInputTokens: totalCached,
+            ledgerKind,
           }),
           cached: false,
         };
@@ -490,6 +498,7 @@ export async function assessIncident(
         inputTokens: totalIn,
         outputTokens: totalOut,
         cachedInputTokens: totalCached,
+        ledgerKind,
       }),
       cached: false,
     };
@@ -518,6 +527,7 @@ export async function assessIncident(
         inputTokens: totalIn,
         outputTokens: totalOut,
         cachedInputTokens: totalCached,
+        ledgerKind,
       }),
       cached: false,
     };
@@ -533,6 +543,7 @@ export async function assessIncident(
         inputTokens: totalIn,
         outputTokens: totalOut,
         cachedInputTokens: totalCached,
+        ledgerKind,
       }),
       cached: false,
     };
@@ -552,6 +563,7 @@ export async function assessIncident(
       inputTokens: totalIn,
       outputTokens: totalOut,
       cachedInputTokens: totalCached,
+      ledgerKind,
     }),
     cached: false,
   };

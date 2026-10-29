@@ -2,7 +2,7 @@
 
 Road cameras — dashcams in cars and roadside traffic cameras — become an early incident warning: cameras see the crash, and drivers behind get a stay / reroute / wait decision before they reach it.
 
-**Live demo: [https://daari-sentinel.vercel.app](https://daari-sentinel.vercel.app)**
+**Live demo: [https://daari-sentinel.vercel.app](https://daari-sentinel.vercel.app)** · **Try your own clip: [daari-sentinel.vercel.app/try](https://daari-sentinel.vercel.app/try)**
 
 ![Warning card on /sim](docs/sim-warning.png)
 
@@ -131,6 +131,7 @@ Commit messages before this point say 'Day 1–3'; these were build steps, all c
 | Oct 27 | Step 6: calibrated clearance times, clickable evidence, instant reroute feedback |
 | Oct 27 | Step 6b: active route plans, multiple incidents, no flip-flopping |
 | Oct 28 | Step 7: privacy blur, demo snapshot, judge README |
+| Oct 28 | Step 8b: landing page and try-your-own-clip with cost guards |
 
 ## Run locally
 
@@ -143,8 +144,10 @@ Copy-Item .env.example .env.local   # then put your real keys in .env.local
 npm run dev
 ```
 
-Open [http://localhost:3000/lab](http://localhost:3000/lab) for the perception lab
-or [http://localhost:3000/sim](http://localhost:3000/sim) for the driving simulation.
+Open [http://localhost:3000/lab](http://localhost:3000/lab) for the perception lab,
+[http://localhost:3000/sim](http://localhost:3000/sim) for the driving simulation,
+or [http://localhost:3000/try](http://localhost:3000/try) to analyze your own clip
+(needs `TRY_IT_ENABLED=true` plus the Blob/Redis keys).
 The demo replays from the committed snapshot at $0; set `LIVE_CALLS=true` to allow
 fresh API calls.
 

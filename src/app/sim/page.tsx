@@ -54,6 +54,8 @@ const WARN_LATERAL_METERS = 300;
 const SPEEDS = [1, 10, 30] as const;
 const ROUTE_BLUE = '#1a73e8';
 const NEW_HAVEN = { lat: 41.3083, lng: -72.9279 };
+/** Pseudo-clip id for incidents imported from /try (video deleted; stills kept in session). */
+const TRY_CLIP = 'try-clip';
 /** Suggest a switch only past this saving (or 10% of remaining, larger wins). */
 const SWITCH_SAVE_MIN = 3;
 /** After picking a plan, hold it this long before offering a switch back. */
@@ -80,6 +82,14 @@ interface SimReport {
   incident: boolean;
   reportId: string;
   direction: 'same' | 'oncoming';
+}
+
+interface TryImport {
+  verdict: SimVerdict;
+  stored: IncidentAssessment;
+  cost: number;
+  clipSeconds: number;
+  stills: { seconds: number; jpeg: string }[];
 }
 
 interface IncidentAssessment {
@@ -465,6 +475,8 @@ export default function SimPage() {
   const demoRef = useRef({ active: false, fired: 0, incidentId: null as number | null });
   const demoChainRef = useRef<Promise<void>>(Promise.resolve());
   const demoAnchorRef = useRef<{ s: number; lat: number; lng: number } | null>(null);
+  const tryStillsRef = useRef<{ seconds: number; jpeg: string }[]>([]);
+  const autoStartRef = useRef(false);
   const nextIdRef = useRef(1);
   const googleRef = useRef<any>(null);
 
@@ -1518,6 +1530,7 @@ export default function SimPage() {
     verdict: SimVerdict,
     t: number,
     direction: 'same' | 'oncoming' = 'same',
+    opts?: { preAssessed?: IncidentAssessment | null; thumbnail?: string | null; agentCost?: number },
   ): Promise<number | null> => {
     if (!verdict.incident) {
       showToast('Report checked: no incident');
@@ -1535,7 +1548,7 @@ export default function SimPage() {
       direction,
     };
     const reporterCar = closestCarId(point.lat, point.lng, direction === 'oncoming' ? -1 : 1);
-    const assessed = await requestAssessment([report], null);
+    const assessed = opts?.preAssessed ?? (await requestAssessment([report], null));
     const stage = assessed ? assessed.assessment.stage : verdict.stage;
     const inc: SimIncident = {
       id,
@@ -1546,13 +1559,13 @@ export default function SimPage() {
       reporterCar,
       reports: [report],
       assessments: assessed ? [assessed] : [],
-      agentCost: assessed ? assessed.estUSD : 0,
+      agentCost: opts?.agentCost ?? (assessed ? assessed.estUSD : 0),
       stage,
       severity: verdict.severity,
       lanesBlocked: assessed ? assessed.assessment.lanes.blocked : (verdict.lanesBlocked ?? 'unknown'),
       active: stage !== 'cleared',
       thumbnail:
-        first !== undefined ? clipThumbUrl(clip, first.second) : null,
+        opts?.thumbnail ?? (first !== undefined ? clipThumbUrl(clip, first.second) : null),
       responders: verdict.responders,
       summary: verdict.summary,
       type: verdict.type,
@@ -2336,6 +2349,82 @@ export default function SimPage() {
     }
   }
 
+  const tryStillFor = (second: number): string | null => {
+    const stills = tryStillsRef.current;
+    if (stills.length === 0) return null;
+    let best = stills[0];
+    for (const s of stills) {
+      if (Math.abs(s.seconds - second) < Math.abs(best.seconds - second)) best = s;
+    }
+    return best.jpeg;
+  };
+
+  // Landing-page entry points: ?demo=1 auto-plays the I-95 demo, ?try=1 imports a
+  // /try result as a dropped incident near Exit 27 (no new AI calls; $0).
+  useEffect(() => {
+    if (autoStartRef.current) return;
+    autoStartRef.current = true;
+    const q = new URLSearchParams(window.location.search);
+    if (q.get('demo') === '1') {
+      void playDemo();
+      return;
+    }
+    if (q.get('try') !== '1') return;
+    const raw = sessionStorage.getItem('try-incident');
+    sessionStorage.removeItem('try-incident');
+    if (!raw) {
+      setPlanError('No /try result found in this tab — analyze a clip first.');
+      return;
+    }
+    let imp: TryImport;
+    try {
+      imp = JSON.parse(raw) as TryImport;
+    } catch {
+      setPlanError('Could not read the /try result.');
+      return;
+    }
+    if (!imp || imp.verdict?.incident !== true || !imp.stored?.assessment || !Array.isArray(imp.stills)) {
+      setPlanError('That /try result has no incident to place.');
+      return;
+    }
+    (async () => {
+      setPlanBusy(true);
+      try {
+        const routes = await fetchTrip({ address: 'New Haven, CT' }, { address: 'Times Square, New York, NY' });
+        const geom = buildRouteGeom(decodePolyline(routes[0].encodedPolyline));
+        const snap = nearestOnRoute(geom, EXIT27);
+        tryStillsRef.current = imp.stills;
+        startDrive(
+          {
+            originLabel: 'New Haven, CT',
+            destLabel: 'Times Square, New York, NY',
+            destReq: { address: 'Times Square, New York, NY' },
+            routes,
+          },
+          false,
+        );
+        await createIncident(
+          { s: snap.s, lat: snap.point.lat, lng: snap.point.lng, routeIdx: 0 },
+          TRY_CLIP,
+          imp.verdict,
+          simTimeRef.current,
+          'same',
+          {
+            preAssessed: imp.stored,
+            thumbnail: imp.stills[0]?.jpeg ?? null,
+            agentCost: imp.cost,
+          },
+        );
+        showToast('Your clip placed near Exit 27.');
+      } catch (err) {
+        setPlanError(err instanceof Error ? err.message : 'Could not start the drive.');
+      } finally {
+        setPlanBusy(false);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   if (phase === 'plan') {
     return (
       <main className="mx-auto flex min-h-dvh w-full max-w-2xl flex-col gap-4 p-4">
@@ -2469,6 +2558,9 @@ export default function SimPage() {
       </main>
     );
   }
+
+  const tryStill =
+    evidencePlay && evidencePlay.clip === TRY_CLIP ? tryStillFor(evidencePlay.second) : null;
 
   return (
     <main className="flex min-h-dvh flex-col md:flex-row">
@@ -3001,7 +3093,8 @@ export default function SimPage() {
               <div className="min-w-0">
                 <p className="text-sm font-semibold">{evidencePlay.label}</p>
                 <p className="text-xs text-stone-600">
-                  {evidencePlay.clip} · from {fmtClock(evidencePlay.second)}
+                  {evidencePlay.clip === TRY_CLIP ? 'Your clip' : evidencePlay.clip} ·{' '}
+                  {evidencePlay.clip === TRY_CLIP ? 'still near' : 'from'} {fmtClock(evidencePlay.second)}
                 </p>
               </div>
               <button
@@ -3013,14 +3106,29 @@ export default function SimPage() {
                 ✕
               </button>
             </div>
-            <video
-              key={`${evidencePlay.clip}-${evidencePlay.second}`}
-              src={`${clipVideoUrl(evidencePlay.clip)}#t=${evidencePlay.second}`}
-              controls
-              autoPlay
-              playsInline
-              className="mt-2 block h-auto w-full rounded bg-black"
-            />
+            {evidencePlay.clip === TRY_CLIP ? (
+              tryStill ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  src={tryStill}
+                  alt={`Still from your clip near ${fmtClock(evidencePlay.second)}`}
+                  className="mt-2 block h-auto w-full rounded bg-black"
+                />
+              ) : (
+                <p className="mt-2 text-sm text-stone-600">
+                  Still not available (the clip was deleted after analysis).
+                </p>
+              )
+            ) : (
+              <video
+                key={`${evidencePlay.clip}-${evidencePlay.second}`}
+                src={`${clipVideoUrl(evidencePlay.clip)}#t=${evidencePlay.second}`}
+                controls
+                autoPlay
+                playsInline
+                className="mt-2 block h-auto w-full rounded bg-black"
+              />
+            )}
             <button
               type="button"
               onClick={() => setEvidencePlay(null)}
