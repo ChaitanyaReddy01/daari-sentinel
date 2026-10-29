@@ -92,6 +92,43 @@ async function readError(res: Response): Promise<string> {
   }
 }
 
+/**
+ * The blob SDK replaces any token-route failure with a generic message, so
+ * on upload failure we re-ask the token route directly to recover the
+ * server's real message (kill switch, quota, budget). Read-only for quota.
+ */
+async function tokenRouteError(pathname: string): Promise<string | null> {
+  try {
+    const res = await fetch('/api/try/upload-token', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        type: 'blob.generate-client-token',
+        payload: { pathname, clientPayload: null, multipart: false },
+      }),
+    });
+    if (res.ok) return null;
+    return await readError(res);
+  } catch {
+    return null;
+  }
+}
+
+async function uploadClip(pathname: string, file: File): Promise<string> {
+  try {
+    const res = await upload(pathname, file, {
+      access: 'public',
+      handleUploadUrl: '/api/try/upload-token',
+    });
+    return res.url;
+  } catch (err) {
+    const serverMessage = await tokenRouteError(pathname);
+    throw new Error(
+      serverMessage ?? (err instanceof Error ? err.message : 'Upload failed.'),
+    );
+  }
+}
+
 async function postJson<T>(url: string, body: unknown): Promise<T> {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), STEP_TIMEOUT_MS);
@@ -273,12 +310,9 @@ export default function TryPage() {
     setError(null);
     try {
       const url = await run('upload', async () => {
-        const res = await upload(`tries/${file.name}`, file, {
-          access: 'public',
-          handleUploadUrl: '/api/try/upload-token',
-        });
-        setBlobUrl(res.url);
-        return res.url;
+        const blobUrl = await uploadClip(`tries/${file.name}`, file);
+        setBlobUrl(blobUrl);
+        return blobUrl;
       });
       const id = await run('start', async () => {
         const data = await postJson<{ tryId: string }>('/api/try/start', {

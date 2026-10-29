@@ -65,6 +65,21 @@ export async function trySpendToday(): Promise<number> {
 
 export const BUDGET_MESSAGE = "Today's free tries are used up. Watch the demo instead.";
 
+export const QUOTA_MESSAGE = `You have used your ${TRY_MAX_PER_IP} free tries for the next 24 hours. Watch the demo instead.`;
+
+/**
+ * Read-only quota check for the upload-token route: blocks the upload when
+ * the IP is out of tries WITHOUT consuming quota (only /try/start counts).
+ */
+export async function assertTryQuota(ip: string): Promise<void> {
+  const r = await redis();
+  const v = await r.get<number | string>(`daari:try:ip:${ip}`);
+  const n = typeof v === 'number' ? v : typeof v === 'string' ? parseInt(v, 10) || 0 : 0;
+  if (n >= TRY_MAX_PER_IP) {
+    throw new TryBlockedError(QUOTA_MESSAGE);
+  }
+}
+
 export async function assertTryBudget(): Promise<void> {
   if ((await trySpendToday()) >= TRY_DAILY_BUDGET_USD) {
     throw new TryBlockedError(BUDGET_MESSAGE);
@@ -105,9 +120,7 @@ export async function tryCreate(args: {
   const n = await r.incr(quotaKey);
   if (n === 1) await r.expire(quotaKey, IP_WINDOW_SECONDS);
   if (n > TRY_MAX_PER_IP) {
-    throw new TryBlockedError(
-      `You have used your ${TRY_MAX_PER_IP} free tries for the next 24 hours. Watch the demo instead.`,
-    );
+    throw new TryBlockedError(QUOTA_MESSAGE);
   }
   const tryId =
     typeof crypto !== 'undefined' && 'randomUUID' in crypto
