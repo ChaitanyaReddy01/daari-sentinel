@@ -131,6 +131,8 @@ Commit messages before this point say 'Day 1–3'; these were build steps, all c
 | Oct 27 | Step 6: calibrated clearance times, clickable evidence, instant reroute feedback |
 | Oct 27 | Step 6b: active route plans, multiple incidents, no flip-flopping |
 | Oct 28 | Step 7: privacy blur, demo snapshot, judge README |
+| Oct 28 | Step 7b: road-camera wording, stop-and-wait fix |
+| Oct 28 | Step 8a: Vercel deploy — clips on Blob, read-only production mode, Redis ledger |
 | Oct 28 | Step 8b: landing page and try-your-own-clip with cost guards |
 
 ## Run locally
