@@ -8,6 +8,7 @@ import {
   REASONING_EFFORT,
   SPARK_MAX_OUTPUT_TOKENS,
   verdictCostUSD,
+  type ReasoningEffort,
 } from './config';
 import {
   PROMPT_VERSION,
@@ -149,8 +150,9 @@ export interface SparkVerdictOutcome {
 export async function requestSparkVerdict(args: {
   video: SparkVideoContent;
   baseUserText: string;
+  effort?: ReasoningEffort;
 }): Promise<SparkVerdictOutcome> {
-  const { video, baseUserText } = args;
+  const { video, baseUserText, effort = REASONING_EFFORT } = args;
   let totalIn = 0;
   let totalOut = 0;
   let totalCached = 0;
@@ -179,7 +181,7 @@ export async function requestSparkVerdict(args: {
             },
           }
         : {}),
-      reasoning: { effort: REASONING_EFFORT },
+      reasoning: { effort },
       max_output_tokens: SPARK_MAX_OUTPUT_TOKENS,
     });
     const usage = response.usage as
@@ -239,8 +241,10 @@ export async function requestSparkVerdict(args: {
  */
 export async function runVerdict({
   clip,
+  effort = REASONING_EFFORT,
 }: {
   clip: string;
+  effort?: ReasoningEffort;
 }): Promise<{ result: VerdictCachedResult; cached: boolean }> {
   const clipInfo = loadPreppedClip(clip);
   if (!clipInfo) {
@@ -248,8 +252,10 @@ export async function runVerdict({
   }
   const videoPath = preppedVideoPath(clip);
   const hash = preppedHash(clip);
+  // Non-default efforts get their own cache key; medium keeps the legacy key.
+  const cacheKey = effort === 'medium' ? hash : `${hash}.${effort}`;
 
-  const hit = readVerdictCache(hash);
+  const hit = readVerdictCache(cacheKey);
   if (hit) return { result: hit, cached: true };
   assertLiveCalls(`Spark verdict on ${clip}`);
 
@@ -261,6 +267,7 @@ export async function runVerdict({
   const outcome = await requestSparkVerdict({
     video: { type: 'input_file', file_id: fileId },
     baseUserText,
+    effort,
   });
 
   const estUSD = verdictCostUSD(
@@ -280,7 +287,7 @@ export async function runVerdict({
     },
     estUSD,
   };
-  writeCacheFile(verdictCachePath(hash), JSON.stringify(out));
+  writeCacheFile(verdictCachePath(cacheKey), JSON.stringify(out));
   await appendVerdictLedger({
     ts: new Date().toISOString(),
     model: MUSE_SPARK_MODEL,
@@ -313,6 +320,9 @@ export async function runVerdictFromUrl({
   const outcome = await requestSparkVerdict({
     video: { type: 'input_video', video_url: videoUrl },
     baseUserText,
+    // Triage eval (Oct 29): low matches medium on incident/responders and
+    // beats it on type (19/19 vs 18/19), so /try verdicts run low.
+    effort: 'low',
   });
   const estUSD = verdictCostUSD(
     MUSE_SPARK_MODEL,

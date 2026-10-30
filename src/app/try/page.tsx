@@ -46,12 +46,19 @@ interface StoredAssessment {
   estUSD: number;
 }
 
-type StepKey = 'upload' | 'start' | 'detect' | 'verdict' | 'assess' | 'finish';
+type StepKey = 'upload' | 'start' | 'quicklook' | 'detect' | 'verdict' | 'assess' | 'finish';
 type StepStatus = 'idle' | 'busy' | 'done' | 'error';
+
+interface QuicklookOut {
+  flag: 'clear' | 'suspicious';
+  reasons: string[];
+  confidence: number;
+}
 
 const STEP_LABELS: Record<StepKey, string> = {
   upload: 'Uploading clip',
   start: 'Reserving a try',
+  quicklook: 'Quick look at one still',
   detect: 'Finding objects on 4 stills',
   verdict: 'Reading the scene',
   assess: 'Tracking the incident',
@@ -242,6 +249,7 @@ function samSummaryFor(detect: DetectStill[]): string {
 const IDLE_STEPS: Record<StepKey, StepStatus> = {
   upload: 'idle',
   start: 'idle',
+  quicklook: 'idle',
   detect: 'idle',
   verdict: 'idle',
   assess: 'idle',
@@ -264,15 +272,20 @@ export default function TryPage() {
   const [stored, setStored] = useState<StoredAssessment | null>(null);
   const [cost, setCost] = useState<number | null>(null);
   const [finished, setFinished] = useState(false);
+  const [quicklook, setQuicklook] = useState<QuicklookOut | null>(null);
+  const [timings, setTimings] = useState<Partial<Record<StepKey, number>>>({});
+  const [fullStarted, setFullStarted] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const setStep = (k: StepKey, v: StepStatus) => setSteps((s) => ({ ...s, [k]: v }));
 
   async function run<T>(key: StepKey, fn: () => Promise<T>): Promise<T> {
     setStep(key, 'busy');
+    const t0 = performance.now();
     try {
       const out = await fn();
       setStep(key, 'done');
+      setTimings((t) => ({ ...t, [key]: performance.now() - t0 }));
       return out;
     } catch (err) {
       setStep(key, 'error');
@@ -304,6 +317,46 @@ export default function TryPage() {
     }
   }
 
+  async function runFull(id: string) {
+    setFullStarted(true);
+    // Level 2 in parallel: verdict waits server-side for the SAM data, so an
+    // empty samSummary lets it use the full hints from the detect step.
+    const [, ver] = await Promise.all([
+      run('detect', async () => {
+        const data = await postJson<{ stills: DetectStill[] }>('/api/try/detect', {
+          tryId: id,
+          stills: stills.map(stillPayload),
+        });
+        setDetect(data.stills);
+        return data.stills;
+      }),
+      run('verdict', async () => {
+        const data = await postJson<{ verdict: Verdict; checks: VerdictCheck[]; roadScene: boolean }>(
+          '/api/try/verdict',
+          { tryId: id, samSummary: '' },
+        );
+        setVerdict(data.verdict);
+        setChecks(data.checks);
+        setRoadScene(data.roadScene);
+        return data;
+      }),
+    ]);
+    // Level 3 only when a real incident was found (new try ⇒ new incident).
+    if (ver.roadScene && ver.verdict.incident) {
+      await run('assess', async () => {
+        const data = await postJson<{ stored: StoredAssessment }>('/api/try/assess', { tryId: id });
+        setStored(data.stored);
+      });
+    } else {
+      setStep('assess', 'done');
+    }
+    await run('finish', async () => {
+      const data = await postJson<{ cost: number }>('/api/try/finish', { tryId: id });
+      setCost(data.cost);
+    });
+    setFinished(true);
+  }
+
   async function startFlow() {
     if (!file || duration === null || stills.length !== 4 || busy) return;
     setBusy(true);
@@ -323,37 +376,32 @@ export default function TryPage() {
         setTryId(data.tryId);
         return data.tryId;
       });
-      const det = await run('detect', async () => {
-        const data = await postJson<{ stills: DetectStill[] }>('/api/try/detect', {
-          tryId: id,
-          stills: stills.map(stillPayload),
-        });
-        setDetect(data.stills);
-        return data.stills;
-      });
-      const ver = await run('verdict', async () => {
-        const data = await postJson<{ verdict: Verdict; checks: VerdictCheck[]; roadScene: boolean }>(
-          '/api/try/verdict',
-          { tryId: id, samSummary: samSummaryFor(det) },
+      const ql = await run('quicklook', async () => {
+        const data = await postJson<{ flag: 'clear' | 'suspicious'; reasons: string[]; confidence: number; cost: number }>(
+          '/api/try/quicklook',
+          { tryId: id, still: stillPayload(stills[1]) },
         );
-        setVerdict(data.verdict);
-        setChecks(data.checks);
-        setRoadScene(data.roadScene);
+        setQuicklook({ flag: data.flag, reasons: data.reasons, confidence: data.confidence });
+        setCost(data.cost);
         return data;
       });
-      if (ver.roadScene) {
-        await run('assess', async () => {
-          const data = await postJson<{ stored: StoredAssessment }>('/api/try/assess', { tryId: id });
-          setStored(data.stored);
-        });
-      } else {
-        setStep('assess', 'done');
+      // Level 1 clear: stop here; the try stays open for "run full anyway".
+      if (ql.flag === 'suspicious') {
+        await runFull(id);
       }
-      await run('finish', async () => {
-        const data = await postJson<{ cost: number }>('/api/try/finish', { tryId: id });
-        setCost(data.cost);
-      });
-      setFinished(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Something went wrong.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function runFullAnyway() {
+    if (!tryId || busy || fullStarted) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await runFull(tryId);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Something went wrong.');
     } finally {
@@ -366,7 +414,18 @@ export default function TryPage() {
     setBusy(true);
     setError(null);
     try {
-      if (key === 'detect') {
+      if (key === 'quicklook') {
+        if (stills.length !== 4) throw new Error('Pick a clip first.');
+        await run('quicklook', async () => {
+          const data = await postJson<{ flag: 'clear' | 'suspicious'; reasons: string[]; confidence: number; cost: number }>(
+            '/api/try/quicklook',
+            { tryId, still: stillPayload(stills[1]) },
+          );
+          setQuicklook({ flag: data.flag, reasons: data.reasons, confidence: data.confidence });
+          setCost(data.cost);
+          if (data.flag === 'suspicious') await runFull(tryId);
+        });
+      } else if (key === 'detect') {
         await run('detect', async () => {
           const data = await postJson<{ stills: DetectStill[] }>('/api/try/detect', {
             tryId,
@@ -423,6 +482,9 @@ export default function TryPage() {
     setStored(null);
     setCost(null);
     setFinished(false);
+    setQuicklook(null);
+    setTimings({});
+    setFullStarted(false);
   }
 
   async function discardAndReset() {
@@ -459,7 +521,9 @@ export default function TryPage() {
 
   const cleared = stored ? displayClearance(stored.assessment, 0, false) : null;
   const running = busy || Object.values(steps).some((s) => s === 'busy');
-  const canRun = file && duration !== null && stills.length === 4 && !running && !finished;
+  const canRun = file && duration !== null && stills.length === 4 && !running && !finished && !tryId;
+  const totalMs = Object.values(timings).reduce((a, b) => a + (b ?? 0), 0);
+  const fmtCost = (usd: number): string => (usd < 0.01 ? `$${usd.toFixed(4)}` : `$${usd.toFixed(2)}`);
 
   return (
     <main className="mx-auto flex min-h-dvh w-full max-w-3xl flex-col gap-6 px-4 py-8">
@@ -508,7 +572,7 @@ export default function TryPage() {
             onClick={startFlow}
             className="min-h-[44px] flex-1 rounded-md bg-stone-900 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-40"
           >
-            {running ? 'Analyzing…' : finished ? 'Analyzed' : 'Analyze this clip'}
+            {running ? 'Analyzing…' : finished ? 'Analyzed' : quicklook && !fullStarted ? 'Quick look done' : 'Analyze this clip'}
           </button>
           {(file || tryId) && !running && (
             <button
@@ -533,6 +597,9 @@ export default function TryPage() {
                 </span>
                 <span className={steps[k] === 'error' ? 'font-semibold text-red-700' : 'text-stone-700'}>
                   {STEP_LABELS[k]}
+                  {steps[k] === 'done' && timings[k] !== undefined && (
+                    <span className="text-stone-500"> · {(timings[k] as number / 1000).toFixed(1)} s</span>
+                  )}
                 </span>
                 {steps[k] === 'error' && k !== 'upload' && k !== 'start' && (
                   <button
@@ -546,6 +613,33 @@ export default function TryPage() {
               </li>
             ))}
           </ol>
+          {totalMs > 0 && (
+            <p className="mt-2 text-sm font-semibold text-stone-800">
+              Total step time {(totalMs / 1000).toFixed(1)} s
+            </p>
+          )}
+        </section>
+      )}
+
+      {quicklook && quicklook.flag === 'clear' && !fullStarted && (
+        <section aria-label="Quick look result" className="rounded-lg border border-stone-200 bg-white p-4">
+          <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-stone-500">Quick look</h2>
+          <p className="text-lg font-bold text-stone-900">
+            Road looks normal; nothing would be posted to the map.
+          </p>
+          <p className="mt-1 text-sm text-stone-600">
+            Cost {cost !== null ? fmtCost(cost) : '…'}
+            {timings.quicklook !== undefined && ` · Quick look ${(timings.quicklook / 1000).toFixed(1)} s`}
+          </p>
+          <button
+            type="button"
+            onClick={runFullAnyway}
+            disabled={running}
+            className="mt-3 min-h-[44px] w-full rounded-md border border-blue-700 px-4 py-2 text-sm font-semibold text-blue-700 disabled:opacity-40 sm:w-auto"
+          >
+            {running ? 'Analyzing…' : 'Run full analysis anyway'}
+          </button>
+          <p className="mt-1 text-xs text-stone-500">Uses the same try and budget.</p>
         </section>
       )}
 
@@ -669,7 +763,7 @@ export default function TryPage() {
       {finished && cost !== null && (
         <section aria-label="Cost" className="rounded-lg border border-stone-200 bg-white p-4">
           <p className="text-sm font-semibold text-stone-800">
-            This analysis cost ${cost.toFixed(2)}. The clip has been deleted.
+            This analysis cost {fmtCost(cost)}. The clip has been deleted.
           </p>
           {roadScene && verdict?.incident && (
             <button

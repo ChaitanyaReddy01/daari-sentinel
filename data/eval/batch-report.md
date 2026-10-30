@@ -73,3 +73,54 @@ Fire trucks block part of intersection ahead; expect delays and use caution.
 ## Failures
 
 None.
+
+## Triage ladder (Oct 29, `npx tsx scripts/triage-eval.ts`)
+
+Level 1 quick look (Muse Spark contributor, low effort, one 45% still) vs the
+incident label, per clip:
+
+| Clip | Label incident | L1 flag | Reasons | Match |
+| --- | --- | --- | --- | --- |
+| ambulance-fire-1 | true | suspicious | responders,stopped_traffic | ✓ |
+| car-accident-1 | true | suspicious | fire,crash,hazard | ✓ |
+| car-police-tow-1 | true | suspicious | crash,responders | ✓ |
+| car-tow-ambulance-police-1 | true | suspicious | responders | ✓ |
+| car-traffic-3 | false | clear | — | ✓ |
+| cars-with-police-1 | false | clear | — | ✓ |
+| crash-1 | true | suspicious | crash,hazard | ✓ |
+| crowd-people-1 | false | suspicious | hazard | ✗ |
+| dash-cam-car-1 | false | clear | — | ✓ |
+| police-car-1 | true | suspicious | responders | ✓ |
+| policecars-1 | true | suspicious | responders,stopped_traffic | ✓ |
+| policecars-2 | true | suspicious | responders,stopped_traffic | ✓ |
+| rd-construction-1 | true | suspicious | work_zone | ✓ |
+| road-work-2 | true | suspicious | work_zone | ✓ |
+| road-work-3 | true | suspicious | work_zone,stopped_traffic | ✓ |
+| traffic-cars-1 | false | clear | — | ✓ |
+| traffic-cars-2 | false | clear | — | ✓ |
+| traffic-cars-3 | false | suspicious | stopped_traffic | ✗ |
+| traffic-normal-1 | false | suspicious | stopped_traffic | ✗ |
+
+L1 accuracy: 16/19. All 11 incident clips flagged suspicious (zero misses).
+The 3 misses are over-flags on normal clips: crowd-people-1 (crowd near the
+road read as a hazard) and traffic-cars-3 + traffic-normal-1 (heavy but
+normal traffic read as stopped_traffic).
+
+Verdict reasoning effort, low vs medium (low cached separately, medium
+results untouched):
+
+| Effort | Incident | Type | Responders |
+| --- | --- | --- | --- |
+| medium | 19/19 | 18/19 | 72/76 |
+| low | 19/19 | 19/19 | 72/76 |
+
+Low matches medium on incident/responders and fixes one type call, so /try
+verdicts run at low effort. /lab and /sim keep medium (committed snapshot).
+
+Ladder economics (measured medians: quick look $0.000219, full check
+$0.08 detect + $0.001 verdict + $0.025 assess = $0.106): escalation rate on
+this incident-heavy set (11/19 incident) is 14/19 = 73.7%. Cost per hour at
+1 quick look/min = 60×quicklook + 60×rate×full = $4.70 on this set; at a
+realistic 5% escalation rate the same formula gives $0.33/hour.
+
+Eval spend (this run): $0.02 (20 quick looks + 19 low verdicts).

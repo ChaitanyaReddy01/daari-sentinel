@@ -8,6 +8,8 @@ import { useEffect, useRef, useState } from 'react';
 
 import { displayClearance, type AgentAssessment } from '@/lib/agent-guard';
 import { clipThumbUrl, clipVideoUrl } from '@/lib/clip-urls';
+import { estimateLadderCost } from '@/lib/triage';
+import ladderData from '../../../data/snapshot/triage-ladder.json';
 import { clearanceEstimate } from '@/lib/clearance';
 import {
   DEMO_EVENTS,
@@ -62,6 +64,25 @@ const SWITCH_SAVE_MIN = 3;
 const PLAN_HOLD_SEC = 120;
 /** …unless a new incident or stage change saves this much by switching. */
 const HOLD_BREAK_MIN = 5;
+/** Cached Level 1 results per clip (committed snapshot; the sim makes no live calls). */
+const LADDER_MAP = ladderData.quicklook as Record<
+  string,
+  { flag: string; reasons: string; confidence: number; cost: number }
+>;
+const LADDER_COSTS = ladderData.costs as {
+  quicklook: number;
+  detect: number;
+  verdict: number;
+  assess: number;
+};
+const LADDER_INCIDENT_CLIPS = Object.keys(LADDER_MAP)
+  .filter((c) => LADDER_MAP[c].flag === 'suspicious')
+  .sort();
+const LADDER_NORMAL_CLIPS = Object.keys(LADDER_MAP)
+  .filter((c) => LADDER_MAP[c].flag !== 'suspicious')
+  .sort();
+/** Seconds of sim time between camera-car quick looks. */
+const LADDER_EVERY_SEC = 60;
 
 interface SimVerdict {
   incident: boolean;
@@ -477,6 +498,9 @@ export default function SimPage() {
   const demoAnchorRef = useRef<{ s: number; lat: number; lng: number } | null>(null);
   const tryStillsRef = useRef<{ seconds: number; jpeg: string }[]>([]);
   const autoStartRef = useRef(false);
+  const [ladder, setLadder] = useState({ checks: 0, escalated: 0 });
+  const ladderTimeRef = useRef(0);
+  const ladderIdxRef = useRef(-1);
   const nextIdRef = useRef(1);
   const googleRef = useRef<any>(null);
 
@@ -846,6 +870,9 @@ export default function SimPage() {
     setCurrentIdx(0);
     setActiveIdxState(0);
     setIncidents([]);
+    setLadder({ checks: 0, escalated: 0 });
+    ladderTimeRef.current = 0;
+    ladderIdxRef.current = -1;
     setSelectedId(null);
     setChoice(null);
     setWarnedIds([]);
@@ -1306,6 +1333,29 @@ export default function SimPage() {
           demo.fired += 1;
           demoChainRef.current = demoChainRef.current.then(() => runDemoEvent(idx)).catch(() => {});
           void demoChainRef.current;
+        }
+        // Triage ladder demo: a camera car replays a cached Level 1 result
+        // about every 60 sim-seconds. Counts only — never touches the map.
+        if (simTimeRef.current - ladderTimeRef.current >= LADDER_EVERY_SEC) {
+          ladderTimeRef.current = simTimeRef.current;
+          const cars = carsRef.current;
+          const traffic = trafficGeomRef.current;
+          if (cars.length > 0 && traffic) {
+            const car = cars[Math.floor(Math.random() * cars.length)];
+            const p = pointAt(traffic, Math.min(Math.max(0, car.s), traffic.length - 1));
+            const nearIncident = incidentsRef.current.some(
+              (i) => i.active && haversineMeters(p, { lat: i.lat, lng: i.lng }) <= 500,
+            );
+            const pool = nearIncident ? LADDER_INCIDENT_CLIPS : LADDER_NORMAL_CLIPS;
+            if (pool.length > 0) {
+              ladderIdxRef.current = (ladderIdxRef.current + 1) % pool.length;
+              const suspicious = LADDER_MAP[pool[ladderIdxRef.current]]?.flag === 'suspicious';
+              setLadder((prev) => ({
+                checks: prev.checks + 1,
+                escalated: prev.escalated + (suspicious ? 1 : 0),
+              }));
+            }
+          }
         }
         const trafficZones = zonesForRoute(0);
         const tSpeeds = trafficSpeedsRef.current;
@@ -2600,6 +2650,23 @@ export default function SimPage() {
       </div>
 
       <div className="flex flex-1 flex-col gap-3 overflow-y-auto p-3 md:h-dvh">
+        <section aria-label="Sentinel activity" className="rounded-lg border border-stone-200 bg-white p-3">
+          <h2 className="text-sm font-semibold">Sentinel activity</h2>
+          <p className="text-sm tabular-nums text-stone-700">
+            {ladder.checks.toLocaleString()} checks · {ladder.escalated} escalated ·{' '}
+            {incidents.reduce((a, i) => a + i.assessments.length, 0)} map updates · $
+            {estimateLadderCost(
+              { quicklooks: ladder.checks, escalated: ladder.escalated },
+              {
+                quicklook: LADDER_COSTS.quicklook,
+                fullCheck: LADDER_COSTS.detect + LADDER_COSTS.verdict + LADDER_COSTS.assess,
+              },
+            ).toFixed(2)}
+          </p>
+          <p className="text-xs text-stone-500">
+            Camera cars replay a cached quick look ~1/min; the map changes only on real events.
+          </p>
+        </section>
         <section className="rounded-lg border border-stone-200 bg-white p-3">
           <div className="flex items-center justify-between gap-2">
             <h2 className="font-semibold">

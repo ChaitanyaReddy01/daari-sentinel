@@ -73,6 +73,12 @@ Agent check (`npx tsx scripts/agent-check.ts`, 7/7 PASS):
 - A single night report gets `low` confidence and a wider range than a clear day report
 - The guard keeps the stage from moving backward on conflicting reports and notes the conflict
 
+Triage ladder (`npx tsx scripts/triage-eval.ts`, [full report](data/eval/batch-report.md)):
+
+- Level 1 quick look (one still, cheap model): **16/19** — all 11 incident clips flagged, 3 normal clips over-flagged (crowd read as hazard, heavy traffic read as stopped)
+- Verdict at low reasoning effort matches medium (incident 19/19, responders 72/76) and fixes one type call (19/19 vs 18/19), so `/try` verdicts run at low effort
+- Cost per driving hour at 1 quick look/min: **$0.33** at a realistic 5% escalation rate (median quick look $0.0002, full check $0.11)
+
 ## How the clearance time is estimated
 
 These are planning estimates, not learned from real clearance records:
@@ -134,6 +140,8 @@ Commit messages before this point say 'Day 1–3'; these were build steps, all c
 | Oct 28 | Step 7b: road-camera wording, stop-and-wait fix |
 | Oct 28 | Step 8a: Vercel deploy — clips on Blob, read-only production mode, Redis ledger |
 | Oct 28 | Step 8b: landing page and try-your-own-clip with cost guards |
+| Oct 29 | Step 8b fix: harden /try upload token route, surface server errors |
+| Oct 29 | Step 8c: triage ladder, map-change rules, faster /try |
 
 ## Run locally
 

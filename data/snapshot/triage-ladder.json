@@ -1,0 +1,124 @@
+{
+  "quicklook": {
+    "ambulance-fire-1": {
+      "flag": "suspicious",
+      "reasons": "responders,stopped_traffic",
+      "confidence": 0.96,
+      "cost": 0.0002056
+    },
+    "car-accident-1": {
+      "flag": "suspicious",
+      "reasons": "fire,crash,hazard",
+      "confidence": 0.99,
+      "cost": 0.00022760000000000003
+    },
+    "car-police-tow-1": {
+      "flag": "suspicious",
+      "reasons": "crash,responders",
+      "confidence": 0.92,
+      "cost": 0.000237726
+    },
+    "car-tow-ambulance-police-1": {
+      "flag": "suspicious",
+      "reasons": "responders",
+      "confidence": 0.9,
+      "cost": 0.00021892599999999998
+    },
+    "car-traffic-3": {
+      "flag": "clear",
+      "reasons": "—",
+      "confidence": 0.92,
+      "cost": 0.0003363
+    },
+    "cars-with-police-1": {
+      "flag": "clear",
+      "reasons": "—",
+      "confidence": 0.92,
+      "cost": 0.000213
+    },
+    "crash-1": {
+      "flag": "suspicious",
+      "reasons": "crash,hazard",
+      "confidence": 0.95,
+      "cost": 0.00019960000000000003
+    },
+    "crowd-people-1": {
+      "flag": "suspicious",
+      "reasons": "hazard",
+      "confidence": 0.95,
+      "cost": 0.000374226
+    },
+    "dash-cam-car-1": {
+      "flag": "clear",
+      "reasons": "—",
+      "confidence": 0.96,
+      "cost": 0.000169526
+    },
+    "police-car-1": {
+      "flag": "suspicious",
+      "reasons": "responders",
+      "confidence": 0.9,
+      "cost": 0.00021352600000000002
+    },
+    "policecars-1": {
+      "flag": "suspicious",
+      "reasons": "responders,stopped_traffic",
+      "confidence": 0.96,
+      "cost": 0.000202726
+    },
+    "policecars-2": {
+      "flag": "suspicious",
+      "reasons": "responders,stopped_traffic",
+      "confidence": 0.95,
+      "cost": 0.000227726
+    },
+    "rd-construction-1": {
+      "flag": "suspicious",
+      "reasons": "work_zone",
+      "confidence": 0.95,
+      "cost": 0.000192326
+    },
+    "road-work-2": {
+      "flag": "suspicious",
+      "reasons": "work_zone",
+      "confidence": 0.97,
+      "cost": 0.00021092599999999998
+    },
+    "road-work-3": {
+      "flag": "suspicious",
+      "reasons": "work_zone,stopped_traffic",
+      "confidence": 0.98,
+      "cost": 0.000355226
+    },
+    "traffic-cars-1": {
+      "flag": "clear",
+      "reasons": "—",
+      "confidence": 0.85,
+      "cost": 0.00029732600000000005
+    },
+    "traffic-cars-2": {
+      "flag": "clear",
+      "reasons": "—",
+      "confidence": 0.9,
+      "cost": 0.00023252600000000002
+    },
+    "traffic-cars-3": {
+      "flag": "suspicious",
+      "reasons": "stopped_traffic",
+      "confidence": 0.92,
+      "cost": 0.000212126
+    },
+    "traffic-normal-1": {
+      "flag": "suspicious",
+      "reasons": "stopped_traffic",
+      "confidence": 0.85,
+      "cost": 0.00038562599999999997
+    }
+  },
+  "costs": {
+    "quicklook": 0.00021892599999999998,
+    "detect": 0.08,
+    "verdict": 0.000979094,
+    "assess": 0.0250024
+  }
+}

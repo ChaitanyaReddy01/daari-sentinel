@@ -18,7 +18,8 @@ import { tryHintsText, trySamRecord, type TryDetectData } from './try-shared';
 
 const Body = z.object({
   tryId: z.string().min(1).max(64),
-  samSummary: z.string().min(1).max(2000),
+  // Empty when Level 2 runs in parallel: the server uses its SAM hints.
+  samSummary: z.string().max(2000),
 });
 
 export const NOT_ROAD_PREFIX = 'Not road footage:';
@@ -49,7 +50,16 @@ export async function POST(req: Request): Promise<Response> {
     }
     await assertTryBudget();
 
-    const detectRaw = await tryGet(tryId, 'detectJson');
+    // Level 2 runs detect + verdict in parallel: wait briefly for the SAM
+    // data so the checks keep their full hints (same atomic write as step 1).
+    let detectRaw = await tryGet(tryId, 'detectJson');
+    if (!detectRaw) {
+      const deadline = Date.now() + 30000;
+      while (!detectRaw && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 500));
+        detectRaw = await tryGet(tryId, 'detectJson');
+      }
+    }
     if (!detectRaw) throw new TryClientError('Run detect first.');
     const detect = JSON.parse(detectRaw) as TryDetectData;
     const hintsText = samSummary.trim().length > 0 ? samSummary : tryHintsText(detect);

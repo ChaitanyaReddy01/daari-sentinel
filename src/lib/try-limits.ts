@@ -9,6 +9,8 @@ import { ledgerAppend } from './ledger';
  * - Global: $2.00/day of real /try cost, reset at midnight ET.
  * - tryId state machine: created(0) → detected(1) → verdict(2) → assessed(3)
  *   → finished(4). Each step checks IP ownership, exact order, no repeats.
+ *   Quick look is a pre-step at 0 that never advances the machine; detect +
+ *   verdict (Level 2) run in parallel, verdict waiting briefly for SAM data.
  */
 
 export const TRY_DAILY_BUDGET_USD = 2;
