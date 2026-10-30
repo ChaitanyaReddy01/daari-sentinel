@@ -34,7 +34,7 @@ flowchart LR
 5. The **guard** verifies the agent's evidence, enforces range rules, and falls back to planning defaults when unsure.
 6. The **route engine** scores stay / reroute / stop-and-wait against the clearance range and the driver's active plan.
 
-Faces and license plates are blurred in every clip a person sees; the models analyze the unblurred footage.
+Faces and license plates are blurred in every image and video shown, including user uploads.
 
 ## Meta models and their jobs
 
@@ -142,6 +142,7 @@ Commit messages before this point say 'Day 1–3'; these were build steps, all c
 | Oct 28 | Step 8b: landing page and try-your-own-clip with cost guards |
 | Oct 29 | Step 8b fix: harden /try upload token route, surface server errors |
 | Oct 29 | Step 8c: triage ladder, map-change rules, faster /try |
+| Oct 29 | Step 8d: blur faces and plates in /try results |
 
 ## Run locally
 

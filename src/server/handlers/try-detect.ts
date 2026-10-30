@@ -20,6 +20,7 @@ import {
 } from '@/lib/try-limits';
 import {
   TRY_DETECT_CONCEPTS,
+  TRY_SENSITIVE_CONCEPTS,
   type TryBox,
   type TryDetectData,
 } from './try-shared';
@@ -36,8 +37,8 @@ const Body = z.object({ tryId: z.string().min(1).max(64), stills: z.array(Still)
 
 /** Boxes kept per concept per still (counts stay exact). */
 const BOX_CAP = 200;
-/** SAM calls in flight at once (32 total must fit in maxDuration). */
-const PARALLEL = 8;
+/** SAM calls in flight at once (40 total in 4 waves, fits in maxDuration). */
+const PARALLEL = 10;
 
 function safeTryId(tryId: string): string {
   if (!/^[a-zA-Z0-9-]{1,64}$/.test(tryId)) throw new Error('Bad tryId.');
@@ -78,7 +79,7 @@ async function detectOne(
   };
 }
 
-/** SAM 3.1 image mode over the 4 client stills × 8 concepts. */
+/** SAM 3.1 image mode over the 4 client stills × (8 object + 2 privacy) concepts. */
 export async function POST(req: Request): Promise<Response> {
   let body: unknown;
   try {
@@ -124,7 +125,9 @@ export async function POST(req: Request): Promise<Response> {
       }
       const jobs: { stillIdx: number; concept: string }[] = [];
       for (let i = 0; i < stills.length; i += 1) {
-        for (const concept of TRY_DETECT_CONCEPTS) jobs.push({ stillIdx: i, concept });
+        for (const concept of [...TRY_DETECT_CONCEPTS, ...TRY_SENSITIVE_CONCEPTS]) {
+          jobs.push({ stillIdx: i, concept });
+        }
       }
       const data: TryDetectData = {
         stills: stills.map((s) => ({

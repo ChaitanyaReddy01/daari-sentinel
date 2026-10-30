@@ -12,6 +12,13 @@ export const TRY_DETECT_CONCEPTS = [
   'safety vest',
 ];
 
+/**
+ * Privacy concepts: detected on the same stills, returned in boxes for
+ * client-side blurring, but NEVER included in SAM records, hints, counts
+ * or the agent input (those iterate TRY_DETECT_CONCEPTS only).
+ */
+export const TRY_SENSITIVE_CONCEPTS = ['face', 'license plate'];
+
 export interface TryBox {
   x1: number;
   y1: number;

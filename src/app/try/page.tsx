@@ -1,6 +1,6 @@
 'use client';
 
-import { useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { upload } from '@vercel/blob/client';
 
@@ -64,6 +64,77 @@ const STEP_LABELS: Record<StepKey, string> = {
   assess: 'Tracking the incident',
   finish: 'Deleting the clip',
 };
+
+/** Privacy concepts: blurred, never boxed, labeled or counted. */
+const SENSITIVE_CONCEPTS = new Set(['face', 'license plate']);
+
+function loadStillImage(src: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error('Could not decode still.'));
+    img.src = src;
+  });
+}
+
+/**
+ * Blur every sensitive box (padded 20%) and return a JPEG data URL. The
+ * source image is decoded off-DOM and never rendered.
+ */
+async function blurStill(jpeg: string, boxes: TryBox[]): Promise<string> {
+  const img = await loadStillImage(jpeg);
+  const canvas = document.createElement('canvas');
+  canvas.width = img.naturalWidth;
+  canvas.height = img.naturalHeight;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('Canvas unavailable.');
+  ctx.drawImage(img, 0, 0);
+  for (const b of boxes) {
+    const padX = (b.x2 - b.x1) * 0.2;
+    const padY = (b.y2 - b.y1) * 0.2;
+    const sx = Math.max(0, Math.floor(b.x1 - padX));
+    const sy = Math.max(0, Math.floor(b.y1 - padY));
+    const sw = Math.min(canvas.width - sx, Math.ceil(b.x2 + padX) - sx);
+    const sh = Math.min(canvas.height - sy, Math.ceil(b.y2 + padY) - sy);
+    if (sw <= 0 || sh <= 0) continue;
+    const off = document.createElement('canvas');
+    off.width = sw;
+    off.height = sh;
+    const octx = off.getContext('2d');
+    if (!octx) continue;
+    octx.filter = `blur(${Math.max(12, Math.round(Math.min(sw, sh) * 0.25))}px)`;
+    octx.drawImage(canvas, sx, sy, sw, sh, 0, 0, sw, sh);
+    ctx.drawImage(off, sx, sy);
+  }
+  return canvas.toDataURL('image/jpeg', 0.85);
+}
+
+function BlurredStill({ jpeg, boxes, alt }: { jpeg: string; boxes: TryBox[]; alt: string }) {
+  const [src, setSrc] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+  const boxesKey = useMemo(() => JSON.stringify(boxes), [boxes]);
+  useEffect(() => {
+    let live = true;
+    blurStill(jpeg, JSON.parse(boxesKey) as TryBox[])
+      .then((u) => {
+        if (live) setSrc(u);
+      })
+      .catch(() => {
+        if (live) setFailed(true);
+      });
+    return () => {
+      live = false;
+    };
+  }, [jpeg, boxesKey]);
+  if (failed) {
+    return <div className="flex h-32 items-center justify-center rounded bg-stone-100 text-xs text-stone-500">Still unavailable</div>;
+  }
+  if (!src) {
+    return <div className="flex h-32 items-center justify-center rounded bg-stone-100 text-xs text-stone-500">Blurring still…</div>;
+  }
+  // eslint-disable-next-line @next/next/no-img-element
+  return <img src={src} alt={alt} className="h-auto w-full rounded" />;
+}
 
 const BOX_COLORS: Record<string, string> = {
   car: '#fbbf24',
@@ -498,9 +569,17 @@ export default function TryPage() {
     reset(true);
   }
 
-  function addToSim() {
-    if (!verdict || !stored || !blobUrl || duration === null || cost === null) return;
+  async function addToSim() {
+    if (!verdict || !stored || !blobUrl || duration === null || cost === null || !detect) return;
     try {
+      // Blurred images only: the unblurred stills never leave this page.
+      const blurred = await Promise.all(
+        stills.map(async (st) => {
+          const d = detect.find((x) => x.index === st.index);
+          const sensitive = d ? [...(d.boxes.face ?? []), ...(d.boxes['license plate'] ?? [])] : [];
+          return { seconds: st.seconds, jpeg: await blurStill(st.jpeg, sensitive) };
+        }),
+      );
       sessionStorage.setItem(
         'try-incident',
         JSON.stringify({
@@ -509,7 +588,7 @@ export default function TryPage() {
           stored,
           cost,
           clipSeconds: Math.round(duration),
-          stills: stills.map((s) => ({ seconds: s.seconds, jpeg: s.jpeg })),
+          stills: blurred,
         }),
       );
     } catch {
@@ -651,15 +730,21 @@ export default function TryPage() {
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             {detect.map((s) => {
               const still = stills.find((x) => x.index === s.index);
-              const entries = Object.entries(s.boxes).flatMap(([concept, boxes]) =>
-                boxes.map((b) => ({ ...b, concept })),
-              );
+              const sensitive = [...(s.boxes.face ?? []), ...(s.boxes['license plate'] ?? [])];
+              const entries = Object.entries(s.boxes)
+                .filter(([concept]) => !SENSITIVE_CONCEPTS.has(concept))
+                .flatMap(([concept, boxes]) =>
+                  boxes.map((b) => ({ ...b, concept })),
+                );
               return (
                 <figure key={s.index} className="rounded-lg border border-stone-200 bg-white p-2">
                   <div className="relative w-full">
                     {still && (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img src={still.jpeg} alt={`Still ${s.index + 1} at ${s.seconds.toFixed(1)} s`} className="h-auto w-full rounded" />
+                      <BlurredStill
+                        jpeg={still.jpeg}
+                        boxes={sensitive}
+                        alt={`Still ${s.index + 1} at ${s.seconds.toFixed(1)} s, faces and plates blurred`}
+                      />
                     )}
                     <svg
                       viewBox={`0 0 ${s.width} ${s.height}`}
@@ -683,7 +768,7 @@ export default function TryPage() {
                   <figcaption className="mt-1 text-xs text-stone-600">
                     Still {s.index + 1} · {s.seconds.toFixed(1)} s ·{' '}
                     {Object.entries(s.counts)
-                      .filter(([, n]) => n > 0)
+                      .filter(([c, n]) => n > 0 && !SENSITIVE_CONCEPTS.has(c))
                       .map(([c, n]) => `${n} ${c}`)
                       .join(', ') || 'nothing found'}
                   </figcaption>
