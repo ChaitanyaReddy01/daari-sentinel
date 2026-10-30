@@ -148,7 +148,10 @@ async function main(): Promise<void> {
     extractStill(preppedVideoPath(clip), frame, info.fps, tmp);
     try {
       const started = Date.now();
-      const { result, cached } = await runQuicklook({ imagePath: tmp });
+      const { result, cached } = await runQuicklook({
+        jpegBase64: fs.readFileSync(tmp).toString('base64'),
+        hash: hashFile(tmp),
+      });
       const ms = Date.now() - started;
       if (!cached) quickSpend += result.estUSD;
       quick[clip] = {

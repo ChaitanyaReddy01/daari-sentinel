@@ -5,7 +5,7 @@ import path from 'node:path';
 import { z } from 'zod';
 import { parseImageStream, recordsOfKind } from '@meta-sam/parser';
 
-import { errMessage, jsonError } from '@/lib/clips';
+import { jsonError } from '@/lib/clips';
 import { meta } from '@/lib/meta';
 import { clientIpFrom } from '@/lib/ratelimit';
 import { SAM_MODEL } from '@/lib/sam';
@@ -13,7 +13,7 @@ import { STILLS_PRICE_PER_IMAGE } from '@/lib/stills';
 import {
   assertTryBudget,
   tryAdvance,
-  tryErrorStatus,
+  tryPublicError,
   tryGet,
   tryLedger,
   tryLoad,
@@ -166,6 +166,7 @@ export async function POST(req: Request): Promise<Response> {
       }
     }
   } catch (err) {
-    return jsonError(errMessage(err), tryErrorStatus(err));
+    const pub = tryPublicError(err);
+    return jsonError(pub.message, pub.status);
   }
 }

@@ -1,18 +1,15 @@
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
-
 import { z } from 'zod';
 
-import { errMessage, jsonError } from '@/lib/clips';
+import { jsonError } from '@/lib/clips';
 import { runQuicklook } from '@/lib/quicklook';
 import { clientIpFrom } from '@/lib/ratelimit';
+import { hashBytes } from '@/lib/clips';
 import {
   assertTryBudget,
   tryAddCost,
-  tryErrorStatus,
   tryLoad,
   TryClientError,
+  tryPublicError,
 } from '@/lib/try-limits';
 
 const Still = z.object({
@@ -25,15 +22,11 @@ const Still = z.object({
 
 const Body = z.object({ tryId: z.string().min(1).max(64), still: Still });
 
-function safeTryId(tryId: string): string {
-  if (!/^[a-zA-Z0-9-]{1,64}$/.test(tryId)) throw new Error('Bad tryId.');
-  return tryId;
-}
-
 /**
  * Level 1 quick look on one still. A pre-step at step 0: it never advances
  * the state machine, so "run full analysis anyway" continues with detect on
- * the same tryId (same quota and budget).
+ * the same tryId (same quota and budget). The still goes to the model as a
+ * data URL; nothing touches disk.
  */
 export async function POST(req: Request): Promise<Response> {
   let body: unknown;
@@ -56,28 +49,23 @@ export async function POST(req: Request): Promise<Response> {
     }
     await assertTryBudget();
 
-    const tmp = path.join(os.tmpdir(), `try-${safeTryId(tryId)}-q${still.index}.jpg`);
     const started = Date.now();
-    try {
-      fs.writeFileSync(tmp, Buffer.from(still.jpegBase64, 'base64'));
-      const { result, cached } = await runQuicklook({ imagePath: tmp }, { liveAuthorized: true });
-      const cost = await tryAddCost(tryId, cached ? 0 : result.estUSD);
-      return Response.json({
-        flag: result.quicklook.flag,
-        reasons: result.quicklook.reasons,
-        confidence: result.quicklook.confidence,
-        cost,
-        ms: Date.now() - started,
-        cached,
-      });
-    } finally {
-      try {
-        fs.unlinkSync(tmp);
-      } catch {
-        // Best effort.
-      }
-    }
+    const hash = hashBytes(Buffer.from(still.jpegBase64, 'base64'));
+    const { result, cached } = await runQuicklook(
+      { jpegBase64: still.jpegBase64, hash },
+      { liveAuthorized: true },
+    );
+    const cost = await tryAddCost(tryId, cached ? 0 : result.estUSD);
+    return Response.json({
+      flag: result.quicklook.flag,
+      reasons: result.quicklook.reasons,
+      confidence: result.quicklook.confidence,
+      cost,
+      ms: Date.now() - started,
+      cached,
+    });
   } catch (err) {
-    return jsonError(errMessage(err), tryErrorStatus(err));
+    const pub = tryPublicError(err);
+    return jsonError(pub.message, pub.status);
   }
 }

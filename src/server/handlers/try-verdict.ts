@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 import { buildChecks } from '@/lib/checks';
-import { errMessage, jsonError } from '@/lib/clips';
+import { jsonError } from '@/lib/clips';
 import { MUSE_SPARK_MODEL } from '@/lib/config';
 import { clientIpFrom } from '@/lib/ratelimit';
 import { runVerdictFromUrl } from '@/lib/spark';
@@ -9,7 +9,7 @@ import {
   assertTryBudget,
   tryAdvance,
   TryClientError,
-  tryErrorStatus,
+  tryPublicError,
   tryGet,
   tryLedger,
   tryLoad,
@@ -81,6 +81,7 @@ export async function POST(req: Request): Promise<Response> {
     await tryAdvance(tryId, 1, { verdictJson: JSON.stringify(payload) });
     return Response.json({ ...payload, cost });
   } catch (err) {
-    return jsonError(errMessage(err), tryErrorStatus(err));
+    const pub = tryPublicError(err);
+    return jsonError(pub.message, pub.status);
   }
 }

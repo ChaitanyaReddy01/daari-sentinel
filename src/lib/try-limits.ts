@@ -31,6 +31,23 @@ export function tryErrorStatus(err: unknown): number {
   return 500;
 }
 
+/** User-facing message for unexpected /try failures (never paths/internals). */
+export const TRY_GENERIC_ERROR = 'Something went wrong analyzing this clip. Please retry.';
+
+/**
+ * Split a /try failure into a public message + status. Guard errors
+ * (kill switch, quota, budget, bad tryId, out-of-order steps) are written
+ * for users and pass through; everything else is logged server-side and
+ * mapped to the generic message so file paths and SDK internals never leak.
+ */
+export function tryPublicError(err: unknown): { message: string; status: number } {
+  if (err instanceof TryBlockedError || err instanceof TryClientError) {
+    return { message: err.message, status: tryErrorStatus(err) };
+  }
+  console.error('[try] internal error:', err instanceof Error ? err.stack ?? err.message : err);
+  return { message: TRY_GENERIC_ERROR, status: 500 };
+}
+
 async function redis() {
   const { Redis } = await import('@upstash/redis');
   return Redis.fromEnv();

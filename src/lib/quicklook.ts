@@ -3,9 +3,7 @@ import path from 'node:path';
 
 import { z } from 'zod';
 
-import { hashFile } from './clips';
 import { MUSE_SPARK_MODEL, verdictCostUSD } from './config';
-import { uploadClip } from './files';
 import { ledgerAppend } from './ledger';
 import { meta } from './meta';
 import { assertLiveCalls, readSnapshotJson, writeCacheFile } from './snapshot';
@@ -131,19 +129,20 @@ function validateQuicklook(
 }
 
 /**
- * Run Level 1 on one still image. Cached by frame hash; /try passes
- * liveAuthorized (its own quota/budget guards already ran).
+ * Run Level 1 on one still image, sent inline as a data URL (no tmp file,
+ * no file upload). Cached by frame hash; /try passes liveAuthorized (its
+ * own quota/budget guards already ran).
  */
 export async function runQuicklook(
-  args: { imagePath: string; hash?: string },
+  args: { jpegBase64: string; hash: string },
   opts?: { liveAuthorized?: boolean },
 ): Promise<{ result: QuicklookCachedResult; cached: boolean }> {
-  const hash = args.hash ?? hashFile(args.imagePath);
+  const { jpegBase64, hash } = args;
   const hit = readQuicklookCache(hash);
   if (hit) return { result: hit, cached: true };
-  if (!opts?.liveAuthorized) assertLiveCalls(`Quick look on ${args.imagePath}`);
+  if (!opts?.liveAuthorized) assertLiveCalls(`Quick look on frame ${hash.slice(0, 12)}…`);
 
-  const fileId = await uploadClip(args.imagePath);
+  const imageUrl = `data:image/jpeg;base64,${jpegBase64}`;
   let totalIn = 0;
   let totalOut = 0;
   let totalCached = 0;
@@ -154,7 +153,7 @@ export async function runQuicklook(
       role: 'user',
       content: [
         { type: 'input_text', text: userText },
-        { type: 'input_image', file_id: fileId },
+        { type: 'input_image', image_url: imageUrl },
       ],
     };
     const response = await meta.responses.create({

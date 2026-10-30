@@ -4,7 +4,7 @@ import { del } from '@vercel/blob';
 
 import { errMessage, jsonError } from '@/lib/clips';
 import { clientIpFrom } from '@/lib/ratelimit';
-import { tryErrorStatus, tryFinishState } from '@/lib/try-limits';
+import { tryFinishState, tryPublicError } from '@/lib/try-limits';
 
 const Body = z.object({ tryId: z.string().min(1).max(64) });
 
@@ -33,6 +33,7 @@ export async function POST(req: Request): Promise<Response> {
     }
     return Response.json({ cost: st.cost });
   } catch (err) {
-    return jsonError(errMessage(err), tryErrorStatus(err));
+    const pub = tryPublicError(err);
+    return jsonError(pub.message, pub.status);
   }
 }

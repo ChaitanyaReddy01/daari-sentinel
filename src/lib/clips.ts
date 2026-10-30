@@ -138,6 +138,11 @@ export function listPreppedClips(): PreppedClip[] {
 /** SHA-256 hex of a file's bytes. The hash keys every cache entry. */
 export function hashFile(localPath: string): string {
   const bytes = fs.readFileSync(localPath);
+  return hashBytes(bytes);
+}
+
+/** SHA-256 hex of in-memory bytes (frames that never touch disk). */
+export function hashBytes(bytes: Buffer): string {
   return crypto.createHash('sha256').update(bytes).digest('hex');
 }
 

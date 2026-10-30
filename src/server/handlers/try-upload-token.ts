@@ -1,13 +1,13 @@
 import { handleUpload } from '@vercel/blob/client';
 
-import { errMessage, jsonError } from '@/lib/clips';
+import { jsonError } from '@/lib/clips';
 import { clientIpFrom } from '@/lib/ratelimit';
 import {
   assertTryBudget,
   assertTryEnabled,
   assertTryQuota,
   TryClientError,
-  tryErrorStatus,
+  tryPublicError,
 } from '@/lib/try-limits';
 
 /**
@@ -49,6 +49,7 @@ export async function POST(req: Request): Promise<Response> {
     });
     return Response.json(result);
   } catch (err) {
-    return jsonError(errMessage(err), tryErrorStatus(err));
+    const pub = tryPublicError(err);
+    return jsonError(pub.message, pub.status);
   }
 }

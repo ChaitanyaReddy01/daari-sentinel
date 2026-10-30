@@ -1,14 +1,14 @@
 import { z } from 'zod';
 
 import { assessIncident, timeOfDayFromVerdict } from '@/lib/agent';
-import { errMessage, jsonError } from '@/lib/clips';
+import { jsonError } from '@/lib/clips';
 import { clientIpFrom } from '@/lib/ratelimit';
 import {
   assertTryBudget,
   tryAddCost,
   tryAdvance,
   TryClientError,
-  tryErrorStatus,
+  tryPublicError,
   tryGet,
   tryLoad,
 } from '@/lib/try-limits';
@@ -79,6 +79,7 @@ export async function POST(req: Request): Promise<Response> {
     await tryAdvance(tryId, 2, { assessJson: JSON.stringify(result) });
     return Response.json({ stored: result, cost });
   } catch (err) {
-    return jsonError(errMessage(err), tryErrorStatus(err));
+    const pub = tryPublicError(err);
+    return jsonError(pub.message, pub.status);
   }
 }
