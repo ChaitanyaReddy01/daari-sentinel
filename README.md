@@ -79,6 +79,23 @@ Triage ladder (`npx tsx scripts/triage-eval.ts`, [full report](data/eval/batch-r
 - Verdict at low reasoning effort matches medium (incident 19/19, responders 72/76) and fixes one type call (19/19 vs 18/19), so `/try` verdicts run at low effort
 - Cost per driving hour at 1 quick look/min: **$0.33** at a realistic 5% escalation rate (median quick look $0.0002, full check $0.11)
 
+## Network effect
+
+"Play network demo" on `/sim`: you drive New Haven → JFK, and as you pass
+Norwalk your camera's quick look flags a crash — the same cached pipeline
+results as the I-95 demo, so the scenario replays at $0. About 40 drivers on
+10 committed corridor trips (routes responses precomputed into
+`data/snapshot/network/`, nothing fetched at runtime) react to your report.
+Each notified driver gets the same stay / reroute / wait scoring from their
+own position, with seeded choices (75% fastest, 15% stay, 10% wait) and
+detour load (+0.15 min per rerouting driver, capped at +8 min).
+
+Verified numbers: your report reached **11 drivers — 4 rerouted, 6 stayed,
+1 stopped to wait — saving an estimated 3.2 driver-hours**; 29 drivers were
+not alerted (already past, going the other way, or arriving after it clears).
+Northbound drivers are never notified, and you get no warning — you're
+already past it — just a thanks for helping other drivers.
+
 ## How the clearance time is estimated
 
 These are planning estimates, not learned from real clearance records:
@@ -142,7 +159,9 @@ Commit messages before this point say 'Day 1–3'; these were build steps, all c
 | Oct 28 | Step 8b: landing page and try-your-own-clip with cost guards |
 | Oct 29 | Step 8b fix: harden /try upload token route, surface server errors |
 | Oct 29 | Step 8c: triage ladder, map-change rules, faster /try |
+| Oct 29 | Step 8c fix: /try live calls bypass the snapshot gate safely |
 | Oct 29 | Step 8d: blur faces and plates in /try results |
+| Oct 29 | Step 8e: network demo — one camera report, many drivers; /try quota and owner pass |
 
 ## Run locally
 

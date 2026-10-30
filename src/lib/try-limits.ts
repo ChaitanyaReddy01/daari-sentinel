@@ -1,3 +1,5 @@
+import crypto from 'node:crypto';
+
 import { ledgerAppend } from './ledger';
 
 /**
@@ -5,7 +7,9 @@ import { ledgerAppend } from './ledger';
  * Upstash Redis; the flow refuses to run without it.
  *
  * - TRY_IT_ENABLED=true kill switch (default off).
- * - Per IP: max 3 tries per 24 h (fixed window from first try).
+ * - Per IP: max TRY_QUOTA_PER_IP tries per 24 h (default 3, fixed window
+ *   from first try). Requests with the owner cookie skip the quota but
+ *   still count toward the daily budget.
  * - Global: $2.00/day of real /try cost, reset at midnight ET.
  * - tryId state machine: created(0) → detected(1) → verdict(2) → assessed(3)
  *   → finished(4). Each step checks IP ownership, exact order, no repeats.
@@ -14,7 +18,10 @@ import { ledgerAppend } from './ledger';
  */
 
 export const TRY_DAILY_BUDGET_USD = 2;
-export const TRY_MAX_PER_IP = 3;
+export const TRY_MAX_PER_IP = Math.max(
+  1,
+  parseInt(process.env.TRY_QUOTA_PER_IP ?? '3', 10) || 3,
+);
 const TRY_TTL_SECONDS = 3600;
 const IP_WINDOW_SECONDS = 86400;
 
@@ -90,12 +97,45 @@ export const QUOTA_MESSAGE = `You have used your ${TRY_MAX_PER_IP} free tries fo
  * Read-only quota check for the upload-token route: blocks the upload when
  * the IP is out of tries WITHOUT consuming quota (only /try/start counts).
  */
-export async function assertTryQuota(ip: string): Promise<void> {
+export async function assertTryQuota(ip: string, owner = false): Promise<void> {
+  if (owner) return;
   const r = await redis();
   const v = await r.get<number | string>(`daari:try:ip:${ip}`);
   const n = typeof v === 'number' ? v : typeof v === 'string' ? parseInt(v, 10) || 0 : 0;
   if (n >= TRY_MAX_PER_IP) {
     throw new TryBlockedError(QUOTA_MESSAGE);
+  }
+}
+
+/** Owner cookie name (httpOnly, 30 days, set by /api/try/owner). */
+export const OWNER_COOKIE = 'try_owner';
+
+/** Timing-safe OWNER_PASS comparison. The pass itself is never logged. */
+export function ownerPassMatches(candidate: string): boolean {
+  const pass = process.env.OWNER_PASS;
+  if (!pass || !candidate) return false;
+  const a = crypto.createHash('sha256').update(candidate).digest();
+  const b = crypto.createHash('sha256').update(pass).digest();
+  return crypto.timingSafeEqual(a, b);
+}
+
+/**
+ * True when the request carries the owner cookie matching OWNER_PASS.
+ * The pass itself is never logged or printed.
+ */
+export function isOwnerRequest(req: Request): boolean {
+  const header = req.headers.get('cookie');
+  if (!header) return false;
+  const found = header
+    .split(';')
+    .map((p) => p.trim())
+    .find((p) => p.startsWith(`${OWNER_COOKIE}=`))
+    ?.slice(OWNER_COOKIE.length + 1);
+  if (!found) return false;
+  try {
+    return ownerPassMatches(decodeURIComponent(found));
+  } catch {
+    return false;
   }
 }
 
@@ -131,15 +171,19 @@ export async function tryCreate(args: {
   blobUrl: string;
   fileName: string;
   durationSec: number;
+  /** Owner requests skip the quota but still count toward the budget. */
+  owner?: boolean;
 }): Promise<string> {
   assertTryEnabled();
   await assertTryBudget();
   const r = await redis();
-  const quotaKey = `daari:try:ip:${args.ip}`;
-  const n = await r.incr(quotaKey);
-  if (n === 1) await r.expire(quotaKey, IP_WINDOW_SECONDS);
-  if (n > TRY_MAX_PER_IP) {
-    throw new TryBlockedError(QUOTA_MESSAGE);
+  if (!args.owner) {
+    const quotaKey = `daari:try:ip:${args.ip}`;
+    const n = await r.incr(quotaKey);
+    if (n === 1) await r.expire(quotaKey, IP_WINDOW_SECONDS);
+    if (n > TRY_MAX_PER_IP) {
+      throw new TryBlockedError(QUOTA_MESSAGE);
+    }
   }
   const tryId =
     typeof crypto !== 'undefined' && 'randomUUID' in crypto

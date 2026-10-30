@@ -4,7 +4,7 @@ import { del, list } from '@vercel/blob';
 
 import { errMessage, jsonError } from '@/lib/clips';
 import { clientIpFrom } from '@/lib/ratelimit';
-import { assertTryBudget, assertTryEnabled, tryCreate, tryPublicError } from '@/lib/try-limits';
+import { assertTryBudget, assertTryEnabled, isOwnerRequest, tryCreate, tryPublicError } from '@/lib/try-limits';
 
 const Body = z.object({
   blobUrl: z.string().url().max(500),
@@ -71,6 +71,7 @@ export async function POST(req: Request): Promise<Response> {
       blobUrl,
       fileName,
       durationSec,
+      owner: isOwnerRequest(req),
     });
     return Response.json({ tryId });
   } catch (err) {

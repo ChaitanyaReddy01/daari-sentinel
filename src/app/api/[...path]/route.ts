@@ -13,6 +13,7 @@ import * as simTrip from '@/server/handlers/sim-trip';
 import * as tryAssess from '@/server/handlers/try-assess';
 import * as tryDetect from '@/server/handlers/try-detect';
 import * as tryFinish from '@/server/handlers/try-finish';
+import * as tryOwner from '@/server/handlers/try-owner';
 import * as tryQuicklook from '@/server/handlers/try-quicklook';
 import * as tryStart from '@/server/handlers/try-start';
 import * as tryUploadToken from '@/server/handlers/try-upload-token';
@@ -45,6 +46,7 @@ const ROUTES: Record<string, { GET?: Handler; POST?: Handler }> = {
   'try/assess': tryAssess,
   'try/detect': tryDetect,
   'try/finish': tryFinish,
+  'try/owner': tryOwner,
   'try/quicklook': tryQuicklook,
   'try/start': tryStart,
   'try/upload-token': tryUploadToken,

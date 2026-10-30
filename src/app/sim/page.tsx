@@ -10,6 +10,23 @@ import { displayClearance, type AgentAssessment } from '@/lib/agent-guard';
 import { clipThumbUrl, clipVideoUrl } from '@/lib/clip-urls';
 import { estimateLadderCost } from '@/lib/triage';
 import ladderData from '../../../data/snapshot/triage-ladder.json';
+import networkTripsJson from '../../../data/snapshot/network/trips.json';
+import networkDriversJson from '../../../data/snapshot/network/drivers.json';
+import {
+  advanceDrivers,
+  buildDrivers,
+  decideDue,
+  driverColor,
+  driverPos,
+  netCounts,
+  notifyDrivers,
+  scoreDriver,
+  type NetCounts,
+  type NetDriver,
+  type NetDriverSnap,
+  type NetIncident,
+  type NetTripSnap,
+} from './network';
 import { clearanceEstimate } from '@/lib/clearance';
 import {
   DEMO_EVENTS,
@@ -84,6 +101,25 @@ const LADDER_NORMAL_CLIPS = Object.keys(LADDER_MAP)
 /** Seconds of sim time between camera-car quick looks. */
 const LADDER_EVERY_SEC = 60;
 
+/** Step 8e network demo: your camera reports a crash near Norwalk (I-95 S). */
+const NET_REPORT_CLIP = 'crash-1';
+const NET_FOLLOWUPS = [
+  { clip: 'car-tow-ambulance-police-1', from: 'oncoming' },
+  { clip: 'car-police-tow-1', from: 'same' },
+  { clip: 'dash-cam-car-1', from: 'oncoming' },
+] as const;
+/** Follow-up gaps after your report: same relative schedule as the I-95 demo. */
+const NET_FOLLOWUP_GAPS_SEC = [12 * 60, 25 * 60, 40 * 60];
+const NET_NORWALK = { lat: 41.105, lng: -73.41 };
+const NET_ZERO_COUNTS: NetCounts = {
+  notified: 0,
+  rerouted: 0,
+  stayed: 0,
+  waiting: 0,
+  savedDriverMin: 0,
+  unaffected: 0,
+};
+
 interface SimVerdict {
   incident: boolean;
   type: string;
@@ -139,6 +175,7 @@ interface SimIncident {
   responders: SimVerdict['responders'];
   summary: string;
   type: string;
+  reportedByYou?: boolean;
 }
 
 interface TripStep {
@@ -501,6 +538,22 @@ export default function SimPage() {
   const [ladder, setLadder] = useState({ checks: 0, escalated: 0 });
   const ladderTimeRef = useRef(0);
   const ladderIdxRef = useRef(-1);
+  // Step 8e network demo state: ~40 drivers reacting to your camera's report.
+  const isNetworkRef = useRef(false);
+  const netDriversRef = useRef<NetDriver[]>([]);
+  const netLoadsRef = useRef(new Map<string, number>());
+  const netChainRef = useRef<Promise<void>>(Promise.resolve());
+  const netFiredRef = useRef(0);
+  const netReportAtRef = useRef(0);
+  const netIncidentIdRef = useRef<number | null>(null);
+  const netNorwalkSRef = useRef(0);
+  const netPxRef = useRef<{ id: string; x: number; y: number }[]>([]);
+  const netSelectedRef = useRef<string | null>(null);
+  const netCountsRef = useRef<NetCounts>(NET_ZERO_COUNTS);
+  const [netOn, setNetOn] = useState(false);
+  const [netCountsState, setNetCountsState] = useState<NetCounts>(NET_ZERO_COUNTS);
+  const [netThanks, setNetThanks] = useState(false);
+  const [netSelected, setNetSelected] = useState<string | null>(null);
   const nextIdRef = useRef(1);
   const googleRef = useRef<any>(null);
 
@@ -883,6 +936,18 @@ export default function SimPage() {
     demoRef.current = { active: false, fired: 0, incidentId: null };
     demoChainRef.current = Promise.resolve();
     setDemoOn(false);
+    isNetworkRef.current = false;
+    netDriversRef.current = [];
+    netLoadsRef.current = new Map();
+    netFiredRef.current = 0;
+    netIncidentIdRef.current = null;
+    netPxRef.current = [];
+    netSelectedRef.current = null;
+    netCountsRef.current = NET_ZERO_COUNTS;
+    setNetOn(false);
+    setNetThanks(false);
+    setNetSelected(null);
+    setNetCountsState(NET_ZERO_COUNTS);
     if (demo) {
       demoAnchorRef.current = (() => {
         const snap = nearestOnRoute(routes[0].geom, EXIT27);
@@ -926,6 +991,66 @@ export default function SimPage() {
       setPlanBusy(false);
     }
   };
+
+  const startNetwork = () => {
+    const trips = networkTripsJson as unknown as NetTripSnap[];
+    const rows = networkDriversJson as unknown as NetDriverSnap[];
+    const yours = trips.find((t) => t.id === 'newhaven-jfk');
+    if (!yours || yours.routes.length === 0) {
+      setPlanError('Network snapshot missing.');
+      return;
+    }
+    // No fetch: your trip comes from the committed snapshot ($0).
+    startDrive(
+      {
+        originLabel: 'New Haven, CT',
+        destLabel: 'JFK Airport, NY',
+        destReq: { address: 'JFK Airport, NY' },
+        routes: yours.routes,
+      },
+      false,
+    );
+    // startDrive cleared network state; now arm it.
+    const drivers = buildDrivers(trips, rows);
+    netDriversRef.current = drivers;
+    netLoadsRef.current = new Map();
+    const geom = tripRef.current?.routes[0].geom;
+    netNorwalkSRef.current = geom ? nearestOnRoute(geom, NET_NORWALK).s : 0;
+    netFiredRef.current = 0;
+    netIncidentIdRef.current = null;
+    isNetworkRef.current = true;
+    netCountsRef.current = { ...NET_ZERO_COUNTS, unaffected: drivers.length };
+    setNetCountsState(netCountsRef.current);
+    setNetOn(true);
+    showToast('Network demo: drive to Norwalk — your camera reports what it sees.');
+  };
+
+  // Network demo: tapping a driver dot selects that driver's alert card.
+  useEffect(() => {
+    if (phase !== 'drive' || !netOn) return;
+    const el = mapRef.current;
+    if (!el) return;
+    const onTap = (ev: MouseEvent) => {
+      const rect = el.getBoundingClientRect();
+      const x = ev.clientX - rect.left;
+      const y = ev.clientY - rect.top;
+      let best: string | null = null;
+      let bestD = 16;
+      for (const p of netPxRef.current) {
+        const dist = Math.hypot(p.x - x, p.y - y);
+        if (dist < bestD) {
+          bestD = dist;
+          best = p.id;
+        }
+      }
+      if (best) {
+        netSelectedRef.current = best;
+        setNetSelected(best);
+      }
+    };
+    el.addEventListener('click', onTap);
+    return () => el.removeEventListener('click', onTap);
+  }, [phase, netOn]);
 
   const [tripId, setTripId] = useState(0);
 
@@ -1155,6 +1280,28 @@ export default function SimPage() {
         dctx.arc(px.x, px.y, 4, 0, Math.PI * 2);
         dctx.fill();
       }
+      // Network demo drivers, colored by state, on the same canvas.
+      if (isNetworkRef.current) {
+        const px: { id: string; x: number; y: number }[] = [];
+        for (const d of netDriversRef.current) {
+          const p = driverPos(d);
+          if (!p) continue;
+          const q = toPx(p);
+          if (!q) continue;
+          const sel = d.id === netSelectedRef.current;
+          dctx.beginPath();
+          dctx.arc(q.x, q.y, sel ? 7 : 5, 0, Math.PI * 2);
+          dctx.fillStyle = driverColor(d);
+          dctx.fill();
+          if (sel) {
+            dctx.lineWidth = 2;
+            dctx.strokeStyle = '#ffffff';
+            dctx.stroke();
+          }
+          px.push({ id: d.id, x: q.x, y: q.y });
+        }
+        netPxRef.current = px;
+      }
     }
     // Congestion: slowed stretches only, over the dots.
     const cctx = cong.getContext('2d');
@@ -1333,6 +1480,32 @@ export default function SimPage() {
           demo.fired += 1;
           demoChainRef.current = demoChainRef.current.then(() => runDemoEvent(idx)).catch(() => {});
           void demoChainRef.current;
+        }
+        // Network demo: your camera reports at Norwalk; ~40 drivers react.
+        if (isNetworkRef.current) {
+          const t = simTimeRef.current;
+          advanceDrivers(netDriversRef.current, t, dt);
+          const fired = netFiredRef.current;
+          if (fired === 0 && activeS() >= netNorwalkSRef.current + 50) {
+            netFiredRef.current = 1;
+            netReportAtRef.current = t;
+            netChainRef.current = netChainRef.current
+              .then(() => runNetworkEvent(0, t))
+              .catch(() => {});
+            void netChainRef.current;
+          } else if (fired >= 1 && fired <= 3) {
+            const at = netReportAtRef.current + NET_FOLLOWUP_GAPS_SEC[fired - 1];
+            if (t >= at) {
+              netFiredRef.current = fired + 1;
+              netChainRef.current = netChainRef.current
+                .then(() => runNetworkEvent(fired, at))
+                .catch(() => {});
+              void netChainRef.current;
+            }
+          }
+          const netInc = netIncidentNow();
+          decideDue(netDriversRef.current, netInc ? [netInc] : [], netLoadsRef.current, t);
+          syncNetCounts();
         }
         // Triage ladder demo: a camera car replays a cached Level 1 result
         // about every 60 sim-seconds. Counts only — never touches the map.
@@ -1522,6 +1695,9 @@ export default function SimPage() {
 
   /** Routes from the car's current position, keyed by rounded pos + dest + incidents. */
   const refreshCandidates = async (): Promise<number[]> => {
+    // Network demo: your snapshot trip has no live refetch; your car needs
+    // none anyway (your camera's incident is behind you).
+    if (isNetworkRef.current) return candRef.current?.idxs ?? [];
     const trip = tripRef.current;
     const destReq = destReqRef.current;
     const geom = yourGeom();
@@ -2087,6 +2263,107 @@ export default function SimPage() {
     void computeOptions();
   };
 
+  /** The network incident as the drivers see it (ranges counted down). */
+  const netIncidentNow = (): NetIncident | null => {
+    const id = netIncidentIdRef.current;
+    if (id === null) return null;
+    const inc = incidentsRef.current.find((i) => i.id === id);
+    if (!inc) return null;
+    const c = incidentRangeAt(inc, simTimeRef.current);
+    return {
+      lat: inc.lat,
+      lng: inc.lng,
+      direction: 'sb',
+      clearLoMin: c.lo,
+      clearLikelyMin: c.likely,
+      clearHiMin: c.hi,
+      lanes: inc.lanesBlocked ?? 'unknown',
+      ageMin: Math.max(0, (simTimeRef.current - netReportAtRef.current) / 60),
+      cleared: !inc.active || inc.stage === 'cleared',
+    };
+  };
+
+  const syncNetCounts = () => {
+    const c = netCounts(netDriversRef.current);
+    const p = netCountsRef.current;
+    if (
+      c.notified !== p.notified ||
+      c.rerouted !== p.rerouted ||
+      c.stayed !== p.stayed ||
+      c.waiting !== p.waiting ||
+      Math.abs(c.savedDriverMin - p.savedDriverMin) > 0.05 ||
+      c.unaffected !== p.unaffected
+    ) {
+      netCountsRef.current = c;
+      setNetCountsState(c);
+    }
+  };
+
+  /**
+   * Network scenario event k (0 = your camera's report, 1–3 = follow-ups).
+   * Times are captured at fire, so the report gaps match the I-95 demo
+   * exactly and every assessment reuses its cached result ($0).
+   */
+  const runNetworkEvent = async (k: number, t: number) => {
+    const clip = k === 0 ? NET_REPORT_CLIP : NET_FOLLOWUPS[k - 1].clip;
+    const from = (k === 0 ? 'same' : NET_FOLLOWUPS[k - 1].from) as 'same' | 'oncoming';
+    try {
+      if (k === 0 && LADDER_MAP[NET_REPORT_CLIP]?.flag !== 'suspicious') {
+        showToast('Network demo needs the cached quick-look result.');
+        return;
+      }
+      if (k === 0) {
+        setLadder((prev) => ({ checks: prev.checks + 1, escalated: prev.escalated + 1 }));
+      }
+      const probeRes = await fetch(`/api/sim/report?clip=${encodeURIComponent(clip)}`);
+      if (!probeRes.ok) throw new Error(await readError(probeRes));
+      const probe = (await probeRes.json()) as { estimateUSD: number };
+      if (probe.estimateUSD > 0) {
+        showToast('Network demo needs cached results — run the batch first.');
+        return;
+      }
+      const res = await fetch('/api/sim/report', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ clip }),
+      });
+      if (!res.ok) throw new Error(await readError(res));
+      const data = (await res.json()) as { verdict: SimVerdict };
+      if (k === 0) {
+        const geom = tripRef.current?.routes[0].geom;
+        if (!geom) return;
+        const anchor = pointAt(geom, netNorwalkSRef.current);
+        const id = await createIncident(
+          { s: netNorwalkSRef.current, lat: anchor.lat, lng: anchor.lng, routeIdx: 0 },
+          clip,
+          data.verdict,
+          t,
+          'same',
+        );
+        if (id === null) return;
+        netIncidentIdRef.current = id;
+        incidentsRef.current = incidentsRef.current.map((i) =>
+          i.id === id ? { ...i, reportedByYou: true } : i,
+        );
+        setIncidents(incidentsRef.current);
+        setNetThanks(true);
+        alert(
+          "Thanks: your camera's report is helping other drivers.",
+          'Thanks. Your camera report is helping other drivers.',
+        );
+      } else {
+        const id = netIncidentIdRef.current;
+        if (id !== null) await applyFollowup(id, clip, data.verdict, t, from);
+      }
+      // Re-notify on every new assessment: late starters plus new ranges.
+      const netInc = netIncidentNow();
+      if (netInc) notifyDrivers(netDriversRef.current, netInc, simTimeRef.current);
+      syncNetCounts();
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Network report failed.');
+    }
+  };
+
   const runDemoEvent = async (idx: number) => {
     const ev = DEMO_EVENTS[idx];
     try {
@@ -2602,6 +2879,17 @@ export default function SimPage() {
           Scripted scenario: New Haven → Times Square with four incident reports near Exit 27,
           Bridgeport.
         </p>
+        <button
+          type="button"
+          onClick={startNetwork}
+          className="min-h-[44px] rounded-md border border-emerald-700 px-4 font-semibold text-emerald-700"
+        >
+          Play network demo
+        </button>
+        <p className="text-sm text-stone-600">
+          Network scenario: you drive New Haven → JFK; your camera reports a crash near Norwalk
+          and about 40 drivers on many trips react to it.
+        </p>
         <footer className="text-xs text-stone-500">
           Demo uses stock road-camera footage as stand-ins for one incident.
         </footer>
@@ -2667,6 +2955,103 @@ export default function SimPage() {
             Camera cars replay a cached quick look ~1/min; the map changes only on real events.
           </p>
         </section>
+        {netOn && (
+          <section aria-label="Network effect" className="rounded-lg border border-emerald-300 bg-emerald-50 p-3">
+            <h2 className="text-sm font-semibold">Network effect: one camera report, many drivers</h2>
+            {!netThanks ? (
+              <p className="text-sm text-stone-700">
+                Drive to Norwalk — your camera reports what it sees.
+              </p>
+            ) : (
+              <>
+                <p className="text-sm text-stone-700">
+                  Thanks: your camera&apos;s report is helping other drivers.
+                </p>
+                <p className="mt-1 text-sm tabular-nums text-stone-800">
+                  Your camera&apos;s report reached {netCountsState.notified} drivers ·{' '}
+                  {netCountsState.rerouted} rerouted · {netCountsState.stayed} stayed ·{' '}
+                  {netCountsState.waiting} stopping to wait · est.{' '}
+                  {(netCountsState.savedDriverMin / 60).toFixed(1)} driver-hours saved
+                </p>
+                <p className="text-sm text-stone-600">
+                  {netCountsState.unaffected} drivers not alerted (already past, other direction,
+                  or arriving after it clears)
+                </p>
+              </>
+            )}
+            <p className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-stone-600">
+              <span><span className="mr-1 inline-block h-2 w-2 rounded-full bg-stone-400" />unaffected</span>
+              <span><span className="mr-1 inline-block h-2 w-2 rounded-full bg-amber-500" />deciding</span>
+              <span><span className="mr-1 inline-block h-2 w-2 rounded-full bg-blue-600" />rerouted</span>
+              <span><span className="mr-1 inline-block h-2 w-2 rounded-full bg-red-600" />stayed</span>
+              <span><span className="mr-1 inline-block h-2 w-2 rounded-full bg-purple-600" />waiting</span>
+            </p>
+            {netSelected !== null &&
+              (() => {
+                const d = netDriversRef.current.find((x) => x.id === netSelected);
+                if (!d) return null;
+                const inc = netIncidentNow();
+                const opts = scoreDriver(d, inc ? [inc] : [], netLoadsRef.current);
+                const state =
+                  d.status === 'alerted'
+                    ? 'Alerted — deciding…'
+                    : d.status === 'rerouted'
+                      ? `Rerouted onto ${d.routeNames[d.routeIdx]}`
+                      : d.status === 'stayed'
+                        ? 'Stayed in the jam'
+                        : d.status === 'waiting'
+                          ? 'Stopping to wait'
+                          : d.arrived
+                            ? 'Arrived'
+                            : 'Not alerted';
+                return (
+                  <div className="mt-2 rounded-md border border-stone-200 bg-white p-2">
+                    <div className="flex items-start justify-between gap-2">
+                      <p className="text-sm font-semibold">{d.tripLabel}</p>
+                      <button
+                        type="button"
+                        aria-label="Close driver card"
+                        onClick={() => {
+                          netSelectedRef.current = null;
+                          setNetSelected(null);
+                        }}
+                        className="min-h-[44px] min-w-[44px] rounded-md border border-stone-300 px-2 text-sm font-semibold"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                    <p className="text-sm text-stone-700">{state}</p>
+                    {d.choice !== null && (
+                      <p className="text-sm text-stone-600">
+                        Chose {d.choice}
+                        {d.savedMin > 0.5 ? ` · saves about ${Math.round(d.savedMin)} min vs staying` : ''}.
+                      </p>
+                    )}
+                    {d.notifiedAt !== null && (
+                      <ul className="mt-1 space-y-1 text-sm tabular-nums text-stone-700">
+                        <li>
+                          Stay {Math.round(opts.stayMin)} min{opts.best === 'stay' ? ' ✓' : ''}
+                        </li>
+                        {opts.rerouteMin !== null && opts.rerouteIdx !== null && (
+                          <li>
+                            Reroute via {d.routeNames[opts.rerouteIdx]} {Math.round(opts.rerouteMin)} min
+                            {opts.best === 'reroute' ? ' ✓' : ''}
+                            {opts.fewestDelaysReason ? ` (${opts.fewestDelaysReason})` : ''}
+                          </li>
+                        )}
+                        {opts.stopMin !== null && opts.stopWaitMin !== null && (
+                          <li>
+                            Stop &amp; wait {Math.round(opts.stopWaitMin)} min, arrive in{' '}
+                            {Math.round(opts.stopMin)} min{opts.best === 'stop' ? ' ✓' : ''}
+                          </li>
+                        )}
+                      </ul>
+                    )}
+                  </div>
+                );
+              })()}
+          </section>
+        )}
         <section className="rounded-lg border border-stone-200 bg-white p-3">
           <div className="flex items-center justify-between gap-2">
             <h2 className="font-semibold">
@@ -2945,7 +3330,8 @@ export default function SimPage() {
                     <p className="text-sm font-semibold">{i.summary}</p>
                     <p className="text-xs text-stone-600">
                       {pretty(i.type)} · {pretty(i.stage)}
-                      {i.active ? '' : ' · cleared'} · car #{i.reporterCar}
+                      {i.active ? '' : ' · cleared'} ·{' '}
+                      {i.reportedByYou ? 'Reported by your camera' : `car #${i.reporterCar}`}
                     </p>
                   </div>
                 </div>

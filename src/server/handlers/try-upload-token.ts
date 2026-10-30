@@ -6,6 +6,7 @@ import {
   assertTryBudget,
   assertTryEnabled,
   assertTryQuota,
+  isOwnerRequest,
   TryClientError,
   tryPublicError,
 } from '@/lib/try-limits';
@@ -34,7 +35,7 @@ export async function POST(req: Request): Promise<Response> {
       onBeforeGenerateToken: async (pathname) => {
         assertTryEnabled();
         await assertTryBudget();
-        await assertTryQuota(clientIpFrom(req));
+        await assertTryQuota(clientIpFrom(req), isOwnerRequest(req));
         if (!pathname.startsWith('tries/')) {
           throw new TryClientError('Uploads must live under tries/.');
         }

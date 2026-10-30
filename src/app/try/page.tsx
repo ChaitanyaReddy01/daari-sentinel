@@ -328,6 +328,30 @@ const IDLE_STEPS: Record<StepKey, StepStatus> = {
 };
 
 export default function TryPage() {
+  const [ownerNote, setOwnerNote] = useState<string | null>(null);
+
+  // Owner pass exchange: POSTs the pass (never logged), stores nothing in JS.
+  useEffect(() => {
+    const q = new URLSearchParams(window.location.search);
+    const pass = q.get('owner');
+    if (!pass) return;
+    q.delete('owner');
+    const rest = q.toString();
+    window.history.replaceState(null, '', `${window.location.pathname}${rest ? `?${rest}` : ''}`);
+    fetch('/api/try/owner', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ pass }),
+    })
+      .then(async (res) => {
+        setOwnerNote(res.ok ? 'Owner pass accepted.' : 'Wrong owner pass.');
+      })
+      .catch(() => {
+        setOwnerNote('Could not verify the owner pass.');
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const [file, setFile] = useState<File | null>(null);
   const [duration, setDuration] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
@@ -612,6 +636,11 @@ export default function TryPage() {
           Upload a short road clip (mp4 or mov, max 30 s, max 50 MB). We find the objects,
           read the scene and track the incident — then delete the clip.
         </p>
+        {ownerNote && (
+          <p role="status" className="text-sm font-semibold text-stone-700">
+            {ownerNote}
+          </p>
+        )}
       </header>
 
       <section className="flex flex-col gap-2 rounded-lg border border-stone-200 bg-white p-4">
