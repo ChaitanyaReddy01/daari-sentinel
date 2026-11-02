@@ -32,8 +32,8 @@ import {
   clockToMin,
   confidencePhrase,
   DEMO_CAPTIONS,
-  FLIGHT_CUTOFF_MIN,
-  FLIGHT_LINE,
+  INTERVIEW_CUTOFF_MIN,
+  INTERVIEW_LINE,
   NET_CAPTION_OPEN,
   netResultLine,
   stagePhrase,
@@ -2966,8 +2966,8 @@ export default function SimPage() {
   }, [warnLikely, warned, warnAssessKey, warnShownMin]);
 
   // ---- Step 10: "Best: <option> · <story or saves>" line ----
-  // In the I-95 demo, a best arrival before 1:15 PM still makes Maya's 2 PM
-  // flight; otherwise (and on other drives) the line shows time saved.
+  // In the I-95 demo, a best arrival before 1:45 PM still makes Maya's 2 PM
+  // interview; otherwise (and on other drives) the line shows time saved.
   let bestLabel = '';
   let bestTail = '';
   if (options && warned) {
@@ -2976,10 +2976,10 @@ export default function SimPage() {
       (options.fastest === 'stop' && !options.stop)
         ? 'stay'
         : options.fastest;
-    const flightTail = (clock: string): string | null => {
+    const storyTail = (clock: string): string | null => {
       if (!isDemo) return null;
       const m = clockToMin(clock);
-      return m !== null && m < FLIGHT_CUTOFF_MIN ? FLIGHT_LINE : null;
+      return m !== null && m < INTERVIEW_CUTOFF_MIN ? INTERVIEW_LINE : null;
     };
     if (effBest === 'reroute' && rOpt?.available) {
       bestLabel = `Reroute via ${rOpt.viaName}`;
@@ -2988,7 +2988,7 @@ export default function SimPage() {
         options.rerouteTotalMin !== null
           ? Math.round(options.stayTotalMin - options.rerouteTotalMin)
           : 0;
-      bestTail = flightTail(clock) ?? (save >= 1 ? `saves ${save} min` : `arrive ${clock}`);
+      bestTail = storyTail(clock) ?? (save >= 1 ? `saves ${save} min` : `arrive ${clock}`);
     } else if (effBest === 'stop' && options.stop) {
       bestLabel = `Wait at ${options.stop.name}`;
       const clock = options.stop.arrivalClock;
@@ -2996,10 +2996,10 @@ export default function SimPage() {
         options.stopTotalMin !== null
           ? Math.round(options.stayTotalMin - options.stopTotalMin)
           : 0;
-      bestTail = flightTail(clock) ?? (save >= 1 ? `saves ${save} min` : `arrive ${clock}`);
+      bestTail = storyTail(clock) ?? (save >= 1 ? `saves ${save} min` : `arrive ${clock}`);
     } else {
       bestLabel = `Stay on ${options.mainName}`;
-      bestTail = flightTail(options.stayArrival) ?? `arrive ${options.stayArrival}`;
+      bestTail = storyTail(options.stayArrival) ?? `arrive ${options.stayArrival}`;
     }
   }
   const warnedEvidence =
@@ -3414,8 +3414,8 @@ export default function SimPage() {
           Play I-95 demo
         </button>
         <p className="text-sm text-stone-600">
-          Maya is driving to her 2 PM flight when a road camera spots a crash near Exit 27,
-          Bridgeport — watch her best choice, then the road clearing.
+          Maya is driving to her 2 PM job interview when a road camera spots a crash near
+          Exit 27, Bridgeport — watch her best choice, then the road clearing.
         </p>
         <button
           type="button"

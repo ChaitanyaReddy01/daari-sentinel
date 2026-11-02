@@ -185,6 +185,7 @@ Commit messages before this point say 'Day 1–3'; these were build steps, all c
 | Oct 29 | Step 8e: network demo — one camera report, many drivers; /try quota and owner pass |
 | Oct 30 | Step 8f: shared community incident board with route-based warnings |
 | Nov 1 | Step 10: simple story-driven presentation with purposeful animations |
+| Nov 1 | Step 10b: Maya story matches the Times Square route |
 
 ## Run locally
 

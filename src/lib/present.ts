@@ -84,15 +84,15 @@ export function clockToMin(clock: string): number | null {
 
 // ---- Maya story (I-95 demo) ----
 
-/** Maya's flight; arrivals before the cutoff still make it comfortably. */
-export const FLIGHT_CLOCK = '2:00 PM';
-export const FLIGHT_CUTOFF_MIN = 13 * 60 + 15; // 1:15 PM
+/** Maya's interview; arrivals before the cutoff still make it comfortably. */
+export const INTERVIEW_CLOCK = '2:00 PM';
+export const INTERVIEW_CUTOFF_MIN = 13 * 60 + 45; // 1:45 PM
 
-export const FLIGHT_LINE = `you'll still make your ${FLIGHT_CLOCK} flight`;
+export const INTERVIEW_LINE = `you'll still make your ${INTERVIEW_CLOCK} interview`;
 
 /** Guided Demo captions, in story order (index 4 = road clear). */
 export const DEMO_CAPTIONS = [
-  'Maya is driving New Haven → JFK for a 2 PM flight',
+  'Maya is driving New Haven → Times Square for a 2:00 PM job interview',
   'A road camera ahead spots a crash',
   "Here's her best choice",
   'Tow truck arrived, so it clears sooner',
