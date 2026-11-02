@@ -12,6 +12,11 @@ const MAX_SECONDS = 30;
 const MAX_BYTES = 50 * 1024 * 1024;
 const STEP_TIMEOUT_MS = 55000;
 const STILL_FRACS = [0.2, 0.45, 0.7, 0.9];
+const BROWSER_KEY = process.env.NEXT_PUBLIC_GOOGLE_MAPS_BROWSER_KEY ?? '';
+/** Post map bounds mirror the server's corridor (it re-validates). */
+const CORRIDOR = { minLat: 40.45, maxLat: 41.8, minLng: -74.35, maxLng: -71.75 };
+/** Client still budget: decoded bytes must stay under the 80 KB server cap. */
+const POST_STILL_MAX_BYTES = 76 * 1024;
 
 interface StillOut {
   index: number;
@@ -307,6 +312,51 @@ function stillPayload(s: StillOut) {
   };
 }
 
+let postMapsPromise: Promise<void> | null = null;
+
+/** Minimal Maps loader for the post modal (same pattern as /sim). */
+function loadPostMapsApi(key: string): Promise<void> {
+  if (typeof window === 'undefined') return Promise.reject(new Error('No window.'));
+  const w = window as unknown as { google?: { maps?: unknown }; gm_authFailure?: () => void };
+  if (w.google?.maps) return Promise.resolve();
+  if (postMapsPromise) return postMapsPromise;
+  postMapsPromise = new Promise((resolve, reject) => {
+    w.gm_authFailure = () => reject(new Error('Google Maps rejected the browser key.'));
+    const script = document.createElement('script');
+    script.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(key)}&v=weekly`;
+    script.async = true;
+    script.onload = () => {
+      if (w.google?.maps) resolve();
+      else reject(new Error('Google Maps script loaded but the API is unavailable.'));
+    };
+    script.onerror = () => reject(new Error('Failed to load the Google Maps script.'));
+    document.head.appendChild(script);
+  });
+  return postMapsPromise;
+}
+
+/** Shrink a blurred still until it fits the board's still budget. */
+async function compressStill(dataUrl: string): Promise<string> {
+  const img = await loadStillImage(dataUrl);
+  for (const width of [640, 480, 320]) {
+    const scale = Math.min(1, width / img.naturalWidth);
+    const w = Math.max(16, Math.round(img.naturalWidth * scale));
+    const h = Math.max(16, Math.round(img.naturalHeight * scale));
+    const canvas = document.createElement('canvas');
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) throw new Error('Canvas unavailable.');
+    ctx.drawImage(img, 0, 0, w, h);
+    for (const q of [0.8, 0.65, 0.5, 0.35]) {
+      const out = canvas.toDataURL('image/jpeg', q);
+      const bytes = Math.floor((out.length - 'data:image/jpeg;base64,'.length) * 0.75);
+      if (bytes <= POST_STILL_MAX_BYTES) return out;
+    }
+  }
+  throw new Error('Could not shrink a still under 80 KB.');
+}
+
 function samSummaryFor(detect: DetectStill[]): string {
   const concepts = ['car', 'truck', 'police car', 'ambulance', 'fire truck', 'tow truck', 'person', 'safety vest'];
   const parts: string[] = [];
@@ -326,6 +376,269 @@ const IDLE_STEPS: Record<StepKey, StepStatus> = {
   assess: 'idle',
   finish: 'idle',
 };
+
+interface PostModalProps {
+  tryId: string;
+  kind: 'incident' | 'clear';
+  stills: StillOut[];
+  detect: DetectStill[] | null;
+  onClose: () => void;
+  onPosted: (road: string | null) => void;
+}
+
+/** Minimal Maps surface used by the post modal (no @types/google.maps). */
+interface PostMapClick {
+  latLng?: { lat: () => number; lng: () => number };
+}
+interface PostMap {
+  fitBounds: (bounds: object) => void;
+  panTo: (p: { lat: number; lng: number }) => void;
+  setZoom: (z: number) => void;
+  addListener: (event: string, fn: (e: PostMapClick) => void) => { remove: () => void };
+}
+interface PostMarker {
+  setPosition: (p: { lat: number; lng: number }) => void;
+}
+interface PostMapsApi {
+  Map: new (el: HTMLElement, opts: Record<string, unknown>) => PostMap;
+  Marker: new (opts: { map: PostMap }) => PostMarker;
+  LatLngBounds: new (sw: { lat: number; lng: number }, ne: { lat: number; lng: number }) => object;
+}
+
+/** Post-to-board map: tap to place (or use GPS), preview the road snap. */
+function PostMapModal({ tryId, kind, stills, detect, onClose, onPosted }: PostModalProps) {
+  const mapRef = useRef<HTMLDivElement>(null);
+  const mapObj = useRef<PostMap | null>(null);
+  const markerObj = useRef<PostMarker | null>(null);
+  const [mapError, setMapError] = useState<string | null>(null);
+  const [loc, setLoc] = useState<{ lat: number; lng: number } | null>(null);
+  const [snap, setSnap] = useState<
+    | { status: 'idle' }
+    | { status: 'busy' }
+    | { status: 'ok'; road: string; distM: number }
+    | { status: 'offroad' }
+    | { status: 'outside' }
+  >({ status: 'idle' });
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!BROWSER_KEY) {
+      setMapError('Map unavailable (no browser key).');
+      return;
+    }
+    let cancelled = false;
+    let clickListener: { remove: () => void } | null = null;
+    (async () => {
+      try {
+        await loadPostMapsApi(BROWSER_KEY);
+        if (cancelled || !mapRef.current) return;
+        const google = (window as unknown as { google: { maps: PostMapsApi } }).google;
+        const map = new google.maps.Map(mapRef.current, {
+          center: { lat: (CORRIDOR.minLat + CORRIDOR.maxLat) / 2, lng: (CORRIDOR.minLng + CORRIDOR.maxLng) / 2 },
+          zoom: 8,
+          streetViewControl: false,
+          fullscreenControl: false,
+        });
+        map.fitBounds(
+          new google.maps.LatLngBounds(
+            { lat: CORRIDOR.minLat, lng: CORRIDOR.minLng },
+            { lat: CORRIDOR.maxLat, lng: CORRIDOR.maxLng },
+          ),
+        );
+        mapObj.current = map;
+        clickListener = map.addListener('click', (e: PostMapClick) => {
+          const lat = e?.latLng?.lat?.();
+          const lng = e?.latLng?.lng?.();
+          if (typeof lat === 'number' && typeof lng === 'number') place(lat, lng);
+        });
+      } catch (err) {
+        if (!cancelled) setMapError(err instanceof Error ? err.message : 'Map failed to load.');
+      }
+    })();
+    return () => {
+      cancelled = true;
+      if (clickListener) clickListener.remove();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  useEffect(() => {
+    if (!loc) {
+      setSnap({ status: 'idle' });
+      return;
+    }
+    let live = true;
+    setSnap({ status: 'busy' });
+    (async () => {
+      try {
+        const res = await fetch(`/api/board/snap?lat=${loc.lat}&lng=${loc.lng}`);
+        if (!res.ok) throw new Error(await readError(res));
+        const data = (await res.json()) as
+          | { ok: true; road: string; distM: number }
+          | { ok: false; reason: 'outside' | 'offroad' };
+        if (!live) return;
+        if (data.ok) setSnap({ status: 'ok', road: data.road, distM: data.distM });
+        else setSnap({ status: data.reason === 'outside' ? 'outside' : 'offroad' });
+      } catch {
+        if (live) setSnap({ status: 'idle' });
+      }
+    })();
+    return () => {
+      live = false;
+    };
+  }, [loc]);
+
+  const place = (lat: number, lng: number) => {
+    setError(null);
+    setLoc({ lat, lng });
+    const w = window as unknown as { google?: { maps?: PostMapsApi } };
+    const map = mapObj.current;
+    const maps = w.google?.maps;
+    if (maps && map) {
+      if (!markerObj.current) {
+        markerObj.current = new maps.Marker({ map });
+      }
+      markerObj.current.setPosition({ lat, lng });
+    }
+  };
+
+  const useMyLocation = () => {
+    setError(null);
+    if (!('geolocation' in navigator)) {
+      setError('Geolocation is not available in this browser.');
+      return;
+    }
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        place(pos.coords.latitude, pos.coords.longitude);
+        mapObj.current?.panTo({ lat: pos.coords.latitude, lng: pos.coords.longitude });
+        mapObj.current?.setZoom(12);
+      },
+      () => setError('Could not read your location. Tap the map instead.'),
+      { timeout: 8000, maximumAge: 60000 },
+    );
+  };
+
+  const post = async () => {
+    if (!loc || snap.status !== 'ok' || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      let payload: { seconds: number; jpeg: string }[] = [];
+      if (kind === 'incident') {
+        // The same blurred canvases the user saw, shrunk under 80 KB each.
+        const ranked = [...stills]
+          .map((st) => {
+            const d = detect?.find((x) => x.index === st.index);
+            const boxes = d ? Object.values(d.boxes).flat().length : 0;
+            return { st, d, boxes };
+          })
+          .sort((a, b) => b.boxes - a.boxes)
+          .slice(0, 2);
+        payload = await Promise.all(
+          ranked.map(async ({ st, d }) => {
+            const sensitive = d ? [...(d.boxes.face ?? []), ...(d.boxes['license plate'] ?? [])] : [];
+            return { seconds: st.seconds, jpeg: await compressStill(await blurStill(st.jpeg, sensitive)) };
+          }),
+        );
+      }
+      const data = await postJson<{ posted: boolean; attached: boolean; road?: string }>(
+        '/api/board',
+        { tryId, lat: loc.lat, lng: loc.lng, stills: payload },
+      );
+      if (!data.posted) throw new Error('Post failed.');
+      onPosted(data.road ?? (snap.status === 'ok' ? snap.road : null));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Post failed.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label={kind === 'incident' ? 'Post to the live map' : 'Post all-clear'}
+      onClick={onClose}
+      className="fixed inset-0 z-50 flex items-end justify-center bg-black/60 p-3 sm:items-center"
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="max-h-[85dvh] w-full max-w-md overflow-y-auto rounded-lg bg-white p-3"
+      >
+        <div className="flex items-start justify-between gap-2">
+          <div className="min-w-0">
+            <p className="text-sm font-semibold">
+              {kind === 'incident' ? 'Where did your camera see it?' : 'Where is the road clear?'}
+            </p>
+            <p className="text-xs text-stone-600">Tap the map or use your location.</p>
+          </div>
+          <button
+            type="button"
+            aria-label="Close post map"
+            onClick={onClose}
+            className="flex min-h-[44px] min-w-[44px] shrink-0 items-center justify-center rounded-md border border-stone-300 text-lg font-semibold hover:bg-stone-100"
+          >
+            ✕
+          </button>
+        </div>
+        {mapError ? (
+          <p role="alert" className="mt-2 text-sm font-semibold text-red-700">
+            {mapError}
+          </p>
+        ) : (
+          <div ref={mapRef} className="mt-2 h-64 w-full rounded-md border border-stone-200" />
+        )}
+        <button
+          type="button"
+          onClick={useMyLocation}
+          className="mt-2 min-h-[44px] w-full rounded-md border border-stone-300 px-4 py-2 text-sm font-semibold text-stone-700 hover:bg-stone-100"
+        >
+          Use my location
+        </button>
+        <div aria-live="polite" className="mt-2 min-h-[20px] text-sm">
+          {snap.status === 'busy' && <p className="text-stone-600">Checking the road…</p>}
+          {snap.status === 'ok' && (
+            <p className="text-stone-800">
+              Snapped to {snap.road} ({snap.distM} m away).
+            </p>
+          )}
+          {snap.status === 'offroad' && (
+            <p className="font-semibold text-amber-800">
+              No major road within 300 m — pick a spot on a road.
+            </p>
+          )}
+          {snap.status === 'outside' && (
+            <p className="font-semibold text-amber-800">That spot is outside the CT–NYC corridor.</p>
+          )}
+        </div>
+        {error && (
+          <p role="alert" className="mt-1 text-sm font-semibold text-red-700">
+            {error}
+          </p>
+        )}
+        <button
+          type="button"
+          onClick={post}
+          disabled={snap.status !== 'ok' || busy}
+          className="mt-2 min-h-[44px] w-full rounded-md bg-emerald-700 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-800 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          {busy ? 'Posting…' : kind === 'incident' ? 'Post to the live map' : 'Post all-clear'}
+        </button>
+      </div>
+    </div>
+  );
+}
 
 export default function TryPage() {
   const [ownerNote, setOwnerNote] = useState<string | null>(null);
@@ -370,6 +683,8 @@ export default function TryPage() {
   const [quicklook, setQuicklook] = useState<QuicklookOut | null>(null);
   const [timings, setTimings] = useState<Partial<Record<StepKey, number>>>({});
   const [fullStarted, setFullStarted] = useState(false);
+  const [postOpen, setPostOpen] = useState<'incident' | 'clear' | null>(null);
+  const [postDone, setPostDone] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const setStep = (k: StepKey, v: StepStatus) => setSteps((s) => ({ ...s, [k]: v }));
@@ -580,6 +895,8 @@ export default function TryPage() {
     setQuicklook(null);
     setTimings({});
     setFullStarted(false);
+    setPostOpen(null);
+    setPostDone(null);
   }
 
   async function discardAndReset() {
@@ -748,6 +1065,21 @@ export default function TryPage() {
             {running ? 'Analyzing…' : 'Run full analysis anyway'}
           </button>
           <p className="mt-1 text-xs text-stone-500">Uses the same try and budget.</p>
+          {!postDone && (
+            <button
+              type="button"
+              onClick={() => setPostOpen('clear')}
+              disabled={running}
+              className="mt-2 min-h-[44px] w-full rounded-md border border-emerald-700 px-4 py-2 text-sm font-semibold text-emerald-700 disabled:opacity-40 sm:w-auto"
+            >
+              Post all-clear to the live map
+            </button>
+          )}
+          {postDone && (
+            <p role="status" className="mt-2 text-sm font-semibold text-emerald-800">
+              {postDone}
+            </p>
+          )}
         </section>
       )}
 
@@ -888,7 +1220,39 @@ export default function TryPage() {
               Add to the I-95 simulation
             </button>
           )}
+          {roadScene && verdict?.incident && stored && !postDone && (
+            <button
+              type="button"
+              onClick={() => setPostOpen('incident')}
+              className="mt-2 min-h-[44px] w-full rounded-md bg-emerald-700 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-800 sm:w-auto"
+            >
+              Post to the live map
+            </button>
+          )}
+          {postDone && (
+            <p role="status" className="mt-2 text-sm font-semibold text-emerald-800">
+              {postDone}
+            </p>
+          )}
         </section>
+      )}
+
+      {postOpen && tryId && (
+        <PostMapModal
+          tryId={tryId}
+          kind={postOpen}
+          stills={stills}
+          detect={detect}
+          onClose={() => setPostOpen(null)}
+          onPosted={(road) => {
+            setPostOpen(null);
+            setPostDone(
+              postOpen === 'incident'
+                ? `Posted${road ? ` on ${road}` : ''}. Drivers whose route passes this spot in the next 2 hours will be warned.`
+                : 'All-clear posted. If another camera agrees, the incident clears.',
+            );
+          }}
+        />
       )}
     </main>
   );

@@ -1,4 +1,7 @@
 import { jsonError } from '@/lib/clips';
+import * as board from '@/server/handlers/board';
+import * as boardDelete from '@/server/handlers/board-delete';
+import * as boardSnap from '@/server/handlers/board-snap';
 import * as labAnalyze from '@/server/handlers/lab-analyze';
 import * as labClips from '@/server/handlers/lab-clips';
 import * as labResult from '@/server/handlers/lab-result';
@@ -31,7 +34,9 @@ export const maxDuration = 60;
 
 type Handler = (req: Request) => Promise<Response>;
 
-const ROUTES: Record<string, { GET?: Handler; POST?: Handler }> = {
+const ROUTES: Record<string, { GET?: Handler; POST?: Handler; DELETE?: Handler }> = {
+  board,
+  'board/snap': boardSnap,
   'lab/analyze': labAnalyze,
   'lab/clips': labClips,
   'lab/result': labResult,
@@ -56,10 +61,26 @@ const ROUTES: Record<string, { GET?: Handler; POST?: Handler }> = {
 async function dispatch(req: Request, segments: string[]): Promise<Response> {
   const key = segments.join('/');
   const route = ROUTES[key];
-  if (!route) return jsonError(`Unknown API path: /api/${key}`, 404);
-  const fn = req.method === 'GET' ? route.GET : req.method === 'POST' ? route.POST : undefined;
-  if (!fn) return jsonError(`Method ${req.method} not allowed for /api/${key}`, 405);
-  return fn(req);
+  if (route) {
+    const fn =
+      req.method === 'GET'
+        ? route.GET
+        : req.method === 'POST'
+          ? route.POST
+          : req.method === 'DELETE'
+            ? route.DELETE
+            : undefined;
+    if (!fn) return jsonError(`Method ${req.method} not allowed for /api/${key}`, 405);
+    return fn(req);
+  }
+  // Owner delete reads the id from the URL: DELETE /api/board/:id.
+  if (segments[0] === 'board' && segments.length === 2) {
+    if (req.method !== 'DELETE' || !boardDelete.DELETE) {
+      return jsonError(`Method ${req.method} not allowed for /api/board/:id`, 405);
+    }
+    return boardDelete.DELETE(req);
+  }
+  return jsonError(`Unknown API path: /api/${key}`, 404);
 }
 
 export async function GET(
@@ -70,6 +91,13 @@ export async function GET(
 }
 
 export async function POST(
+  req: Request,
+  ctx: { params: { path: string[] } },
+): Promise<Response> {
+  return dispatch(req, ctx.params.path);
+}
+
+export async function DELETE(
   req: Request,
   ctx: { params: { path: string[] } },
 ): Promise<Response> {

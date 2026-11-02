@@ -203,15 +203,19 @@ export async function tryCreate(args: {
   return tryId;
 }
 
-/** Load try state, enforcing IP ownership. */
-export async function tryLoad(tryId: string, ip: string): Promise<TryState> {
+/** Load try state, enforcing IP ownership (the owner cookie may skip it). */
+export async function tryLoad(
+  tryId: string,
+  ip: string,
+  opts?: { skipIpCheck?: boolean },
+): Promise<TryState> {
   assertTryEnabled();
   const r = await redis();
   const h = await r.hgetall<Record<string, unknown>>(tryKey(tryId));
   if (!h || typeof h.ip !== 'string') {
     throw new TryClientError('This try expired or does not exist. Start a new one.');
   }
-  if (h.ip !== ip) {
+  if (!opts?.skipIpCheck && h.ip !== ip) {
     throw new TryClientError('This try belongs to a different session.');
   }
   const asString = (v: unknown): string =>
@@ -236,6 +240,16 @@ export async function tryAdvance(tryId: string, from: number, patch: Record<stri
     throw new TryClientError('Steps ran out of order. Start a new try.');
   }
   await r.hset(tryKey(tryId), { step: from + 1, ...patch });
+  await r.expire(tryKey(tryId), TRY_TTL_SECONDS);
+}
+
+/**
+ * Patch extra fields without moving the state machine (quick-look result,
+ * board post marker). Refreshes the TTL like any other write.
+ */
+export async function tryPatch(tryId: string, patch: Record<string, string | number>): Promise<void> {
+  const r = await redis();
+  await r.hset(tryKey(tryId), patch);
   await r.expire(tryKey(tryId), TRY_TTL_SECONDS);
 }
 

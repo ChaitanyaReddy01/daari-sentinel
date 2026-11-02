@@ -55,5 +55,9 @@ next-env.d.ts
 # throwaway verification screenshots
 .verify-shots/
 
+# throwaway verify temp dirs (chrome profiles, tsx cache)
+.tmp-verify/
+.tsx-tmp/
+
 .vercel
 .env*

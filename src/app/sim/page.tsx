@@ -75,6 +75,10 @@ const ROUTE_BLUE = '#1a73e8';
 const NEW_HAVEN = { lat: 41.3083, lng: -72.9279 };
 /** Pseudo-clip id for incidents imported from /try (video deleted; stills kept in session). */
 const TRY_CLIP = 'try-clip';
+/** Clip prefix for community board incidents: `community:<boardId>`. */
+const COMMUNITY_CLIP = 'community:';
+/** Live board poll cadence while driving with community reports on. */
+const BOARD_POLL_MS = 15000;
 /** Suggest a switch only past this saving (or 10% of remaining, larger wins). */
 const SWITCH_SAVE_MIN = 3;
 /** After picking a plan, hold it this long before offering a switch back. */
@@ -176,6 +180,39 @@ interface SimIncident {
   summary: string;
   type: string;
   reportedByYou?: boolean;
+  source?: 'community';
+  boardId?: string;
+  bearingDeg?: number | null;
+}
+
+/** Board incident as served by GET /api/board (local mirror; no server import). */
+interface BoardPublicIncident {
+  id: string;
+  lat: number;
+  lng: number;
+  road: string;
+  bearingDeg: number | null;
+  verdict: {
+    type: string;
+    stage: string;
+    summary: string;
+    responders: SimVerdict['responders'];
+    lanesBlocked: string;
+  };
+  assessment: {
+    assessment: AgentAssessment;
+    source: 'muse-wonder' | 'fallback table';
+    notes: string[];
+  };
+  stills: { seconds: number; jpeg: string }[];
+  reportCount: number;
+  clearCount: number;
+  stage: string;
+  active: boolean;
+  createdAt: number;
+  updatedAt: number;
+  expiresAt: number;
+  source: 'community';
 }
 
 interface TripStep {
@@ -311,6 +348,30 @@ function stripNarrowsPrefix(s: string): string {
 
 function capFirst(s: string): string {
   return s.length === 0 ? s : s[0].toUpperCase() + s.slice(1);
+}
+
+/** Travel bearing (deg) of a route at arclength s, from its segment. */
+function routeBearingAt(geom: RouteGeom, s: number): number {
+  const pts = geom.points;
+  let acc = 0;
+  let idx = 0;
+  for (let i = 0; i + 1 < pts.length; i += 1) {
+    const seg = haversineMeters(pts[i], pts[i + 1]);
+    if (acc + seg >= s) {
+      idx = i;
+      break;
+    }
+    acc += seg;
+    idx = i;
+  }
+  const a = pts[idx];
+  const b = pts[Math.min(pts.length - 1, idx + 1)];
+  const kx = 111320 * Math.cos((a.lat * Math.PI) / 180);
+  const ky = 110540;
+  const dx = (b.lng - a.lng) * kx;
+  const dy = (b.lat - a.lat) * ky;
+  const deg = (Math.atan2(dx, dy) * 180) / Math.PI;
+  return deg < 0 ? deg + 360 : deg;
 }
 
 async function readError(res: Response): Promise<string> {
@@ -534,6 +595,10 @@ export default function SimPage() {
   const demoChainRef = useRef<Promise<void>>(Promise.resolve());
   const demoAnchorRef = useRef<{ s: number; lat: number; lng: number } | null>(null);
   const tryStillsRef = useRef<{ seconds: number; jpeg: string }[]>([]);
+  // Step 8f live mode: community board stills + versions by board id.
+  const communityStillsRef = useRef(new Map<string, { seconds: number; jpeg: string }[]>());
+  const boardUpdatedRef = useRef(new Map<string, number>());
+  const [showLive, setShowLive] = useState(true);
   const autoStartRef = useRef(false);
   const [ladder, setLadder] = useState({ checks: 0, escalated: 0 });
   const ladderTimeRef = useRef(0);
@@ -948,6 +1013,10 @@ export default function SimPage() {
     setNetThanks(false);
     setNetSelected(null);
     setNetCountsState(NET_ZERO_COUNTS);
+    communityStillsRef.current = new Map();
+    boardUpdatedRef.current = new Map();
+    // Live community reports default on for plan-a-trip drives, off in demos.
+    setShowLive(!demo);
     if (demo) {
       demoAnchorRef.current = (() => {
         const snap = nearestOnRoute(routes[0].geom, EXIT27);
@@ -1022,6 +1091,7 @@ export default function SimPage() {
     netCountsRef.current = { ...NET_ZERO_COUNTS, unaffected: drivers.length };
     setNetCountsState(netCountsRef.current);
     setNetOn(true);
+    setShowLive(false);
     showToast('Network demo: drive to Norwalk — your camera reports what it sees.');
   };
 
@@ -1051,6 +1121,18 @@ export default function SimPage() {
     el.addEventListener('click', onTap);
     return () => el.removeEventListener('click', onTap);
   }, [phase, netOn]);
+
+  // Step 8f live mode: poll the community board while driving, tab visible.
+  useEffect(() => {
+    if (phase !== 'drive' || !showLive) return;
+    void syncBoard();
+    const timer = setInterval(() => {
+      if (document.visibilityState !== 'visible') return;
+      void syncBoard();
+    }, BOARD_POLL_MS);
+    return () => clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase, showLive]);
 
   const [tripId, setTripId] = useState(0);
 
@@ -1628,7 +1710,7 @@ export default function SimPage() {
       const marker = new google.maps.Marker({
         position: { lat: i.lat, lng: i.lng },
         map,
-        title: i.summary,
+        title: i.source === 'community' ? `Community report (demo) — ${i.summary}` : i.summary,
         ...(warned ? { label: { text: st.letter, color: '#ffffff', fontWeight: 'bold' } } : {}),
         icon: {
           path: google.maps.SymbolPath.CIRCLE,
@@ -1937,11 +2019,27 @@ export default function SimPage() {
     const aS = activeS();
     const ahead = activeIncidents()
       .map((i) => ({ i, s: incidentSOn(i, plan.geom) }))
-      .filter(
-        (o) =>
-          o.s > aS + 1 &&
-          minDistanceToRoute(plan.geom, { lat: o.i.lat, lng: o.i.lng }) <= WARN_LATERAL_METERS,
-      )
+      .filter((o) => {
+        if (
+          !(o.s > aS + 1) ||
+          minDistanceToRoute(plan.geom, { lat: o.i.lat, lng: o.i.lng }) > WARN_LATERAL_METERS
+        ) {
+          return false;
+        }
+        // Community reports: same direction of travel, and arriving before
+        // the incident likely clears. Scripted incidents keep their rules.
+        if (o.i.source === 'community') {
+          if (o.i.bearingDeg !== null && o.i.bearingDeg !== undefined) {
+            let d = Math.abs(routeBearingAt(plan.geom, o.s) - o.i.bearingDeg) % 360;
+            if (d > 180) d = 360 - d;
+            if (d >= 90) return false;
+          }
+          const arrivalMin =
+            projectToSWithSpeeds(aS, o.s, [], plan.speeds, YOUR_BASE_MPS) / 60;
+          if (arrivalMin >= incidentRangeAt(o.i, simTimeRef.current).hi) return false;
+        }
+        return true;
+      })
       .sort((a, b) => a.s - b.s)
       .map((o) => o.i);
     const ids = ahead.map((i) => i.id);
@@ -2686,6 +2784,161 @@ export default function SimPage() {
     return best.jpeg;
   };
 
+  const communityStillFor = (boardId: string, second: number): string | null => {
+    const stills = communityStillsRef.current.get(boardId) ?? [];
+    if (stills.length === 0) return null;
+    let best = stills[0];
+    for (const s of stills) {
+      if (Math.abs(s.seconds - second) < Math.abs(best.seconds - second)) best = s;
+    }
+    return best.jpeg;
+  };
+
+  const isStillClip = (clip: string): boolean => clip === TRY_CLIP || clip.startsWith(COMMUNITY_CLIP);
+
+  /** Add one board incident as a full SimIncident (pre-assessed, $0). */
+  const addCommunityIncident = async (b: BoardPublicIncident): Promise<void> => {
+    const routes = tripRef.current?.routes;
+    if (!routes || routes.length === 0) return;
+    let routeIdx = 0;
+    let bestD = Infinity;
+    routes.forEach((r, idx) => {
+      const d = minDistanceToRoute(r.geom, { lat: b.lat, lng: b.lng });
+      if (d < bestD) {
+        bestD = d;
+        routeIdx = idx;
+      }
+    });
+    const g = routes[routeIdx].geom;
+    const s = nearestOnRoute(g, { lat: b.lat, lng: b.lng }).s;
+    const verdict: SimVerdict = {
+      incident: true,
+      type: b.verdict.type,
+      severity: null,
+      stage: b.verdict.stage,
+      lanesBlocked: b.verdict.lanesBlocked,
+      responders: b.verdict.responders,
+      summary: b.verdict.summary,
+      evidence: b.assessment.assessment.evidence.map((e) => ({ second: e.second, what: e.claim })),
+    };
+    const id = await createIncident(
+      { s, lat: b.lat, lng: b.lng, routeIdx },
+      `${COMMUNITY_CLIP}${b.id}`,
+      verdict,
+      simTimeRef.current,
+      'same',
+      {
+        preAssessed: {
+          assessment: b.assessment.assessment,
+          source: b.assessment.source,
+          notes: b.assessment.notes,
+          estUSD: 0,
+          atT: simTimeRef.current,
+        },
+        thumbnail: b.stills[0]?.jpeg ?? null,
+        agentCost: 0,
+      },
+    );
+    if (id === null) return;
+    incidentsRef.current = incidentsRef.current.map((i) =>
+      i.id === id ? { ...i, source: 'community' as const, boardId: b.id, bearingDeg: b.bearingDeg } : i,
+    );
+    setIncidents(incidentsRef.current);
+    communityStillsRef.current.set(b.id, b.stills);
+    boardUpdatedRef.current.set(b.id, b.updatedAt);
+  };
+
+  /** Apply a board update (new assessment/report) to a live incident. */
+  const updateCommunityIncident = (known: SimIncident, b: BoardPublicIncident): void => {
+    const assessment: IncidentAssessment = {
+      assessment: b.assessment.assessment,
+      source: b.assessment.source,
+      notes: b.assessment.notes,
+      estUSD: 0,
+      atT: simTimeRef.current,
+    };
+    const report: SimReport = {
+      t: simTimeRef.current,
+      clip: `${COMMUNITY_CLIP}${b.id}`,
+      stage: b.verdict.stage,
+      summary: b.verdict.summary,
+      incident: true,
+      reportId: `r${known.reports.length + 1}`,
+      direction: 'same',
+    };
+    incidentsRef.current = incidentsRef.current.map((i) =>
+      i.id === known.id
+        ? {
+            ...i,
+            reports: [...i.reports, report],
+            assessments: [...i.assessments, assessment],
+            stage: b.stage,
+            active: b.active,
+            summary: b.verdict.summary,
+            type: b.verdict.type,
+            lanesBlocked: assessment.assessment.lanes.blocked,
+            responders: b.verdict.responders,
+            thumbnail: b.stills[0]?.jpeg ?? i.thumbnail,
+          }
+        : i,
+    );
+    setIncidents(incidentsRef.current);
+    communityStillsRef.current.set(b.id, b.stills);
+    boardUpdatedRef.current.set(b.id, b.updatedAt);
+    lastChangeRef.current = simTimeRef.current;
+    void refreshCandidates().then(() => {
+      if (warnedIdsRef.current.length > 0) computeOptions();
+    });
+  };
+
+  const purgeCommunityIncidents = (): void => {
+    if (!incidentsRef.current.some((i) => i.source === 'community')) return;
+    incidentsRef.current = incidentsRef.current.filter((i) => i.source !== 'community');
+    setIncidents(incidentsRef.current);
+    communityStillsRef.current = new Map();
+    boardUpdatedRef.current = new Map();
+  };
+
+  /** Merge the live board into the incident list (add/update/remove). */
+  const syncBoard = async (): Promise<void> => {
+    if (!tripRef.current) return;
+    let data: { incidents: BoardPublicIncident[] };
+    try {
+      const res = await fetch('/api/board');
+      if (!res.ok) return;
+      data = (await res.json()) as { incidents: BoardPublicIncident[] };
+    } catch {
+      return;
+    }
+    if (!Array.isArray(data.incidents)) return;
+    const seen = new Set<string>();
+    for (const b of data.incidents) {
+      if (!b || typeof b.id !== 'string') continue;
+      seen.add(b.id);
+      const known = incidentsRef.current.find((i) => i.boardId === b.id);
+      const prevUpdated = boardUpdatedRef.current.get(b.id) ?? -1;
+      if (!known) {
+        await addCommunityIncident(b);
+      } else if (b.updatedAt > prevUpdated) {
+        updateCommunityIncident(known, b);
+      }
+    }
+    const gone = incidentsRef.current.filter(
+      (i) => i.source === 'community' && i.boardId && !seen.has(i.boardId),
+    );
+    if (gone.length > 0) {
+      const goneIds = new Set(gone.map((i) => i.id));
+      incidentsRef.current = incidentsRef.current.filter((i) => !goneIds.has(i.id));
+      setIncidents(incidentsRef.current);
+      for (const g of gone) {
+        if (g.boardId) {
+          communityStillsRef.current.delete(g.boardId);
+          boardUpdatedRef.current.delete(g.boardId);
+        }
+      }
+    }
+  };
+
   // Landing-page entry points: ?demo=1 auto-plays the I-95 demo, ?try=1 imports a
   // /try result as a dropped incident near Exit 27 (no new AI calls; $0).
   useEffect(() => {
@@ -2899,6 +3152,11 @@ export default function SimPage() {
 
   const tryStill =
     evidencePlay && evidencePlay.clip === TRY_CLIP ? tryStillFor(evidencePlay.second) : null;
+  const communityStill =
+    evidencePlay && evidencePlay.clip.startsWith(COMMUNITY_CLIP)
+      ? communityStillFor(evidencePlay.clip.slice(COMMUNITY_CLIP.length), evidencePlay.second)
+      : null;
+  const stillSrc = tryStill ?? communityStill;
 
   return (
     <main className="flex min-h-dvh flex-col md:flex-row">
@@ -3078,6 +3336,22 @@ export default function SimPage() {
           </div>
           <p className="mt-1 text-sm text-stone-600">
             Your route: {planLabel || '—'}
+          </p>
+          <label className="mt-1 flex min-h-[44px] cursor-pointer items-center gap-2 text-sm text-stone-700">
+            <input
+              type="checkbox"
+              checked={showLive}
+              onChange={(e) => {
+                const on = e.target.checked;
+                setShowLive(on);
+                if (!on) purgeCommunityIncidents();
+              }}
+              className="h-5 w-5"
+            />
+            Show live community reports
+          </label>
+          <p className="text-xs text-stone-500">
+            Community reports are AI-checked uploads from visitors; they expire after 2 hours.
           </p>
           <p className="mt-1 text-sm text-stone-600">
             {hud.arrived
@@ -3329,6 +3603,7 @@ export default function SimPage() {
                   <div className="min-w-0 flex-1">
                     <p className="text-sm font-semibold">{i.summary}</p>
                     <p className="text-xs text-stone-600">
+                      {i.source === 'community' ? 'Community report (demo) · ' : ''}
                       {pretty(i.type)} · {pretty(i.stage)}
                       {i.active ? '' : ' · cleared'} ·{' '}
                       {i.reportedByYou ? 'Reported by your camera' : `car #${i.reporterCar}`}
@@ -3425,7 +3700,13 @@ export default function SimPage() {
                       const a = i.assessments[idx] ?? null;
                       return (
                         <li key={idx} className="text-xs text-stone-600">
-                          {formatElapsed(r.t)} · {r.clip} · {pretty(r.stage)}
+                          {formatElapsed(r.t)} ·{' '}
+                          {r.clip === TRY_CLIP
+                            ? 'Your clip'
+                            : r.clip.startsWith(COMMUNITY_CLIP)
+                              ? 'Community report'
+                              : r.clip}{' '}
+                          · {pretty(r.stage)}
                           {r.direction === 'oncoming' ? ' · seen by an oncoming car' : ''}
                           {a &&
                             ` · ${a.assessment.changesSinceLast} · ${Math.round(a.assessment.clearance.lowMin)}–${Math.round(a.assessment.clearance.highMin)} min`}
@@ -3546,8 +3827,12 @@ export default function SimPage() {
               <div className="min-w-0">
                 <p className="text-sm font-semibold">{evidencePlay.label}</p>
                 <p className="text-xs text-stone-600">
-                  {evidencePlay.clip === TRY_CLIP ? 'Your clip' : evidencePlay.clip} ·{' '}
-                  {evidencePlay.clip === TRY_CLIP ? 'still near' : 'from'} {fmtClock(evidencePlay.second)}
+                  {evidencePlay.clip === TRY_CLIP
+                    ? 'Your clip'
+                    : evidencePlay.clip.startsWith(COMMUNITY_CLIP)
+                      ? 'Community report'
+                      : evidencePlay.clip}{' '}
+                  · {isStillClip(evidencePlay.clip) ? 'still near' : 'from'} {fmtClock(evidencePlay.second)}
                 </p>
               </div>
               <button
@@ -3559,12 +3844,16 @@ export default function SimPage() {
                 ✕
               </button>
             </div>
-            {evidencePlay.clip === TRY_CLIP ? (
-              tryStill ? (
+            {isStillClip(evidencePlay.clip) ? (
+              stillSrc ? (
                 // eslint-disable-next-line @next/next/no-img-element
                 <img
-                  src={tryStill}
-                  alt={`Still from your clip near ${fmtClock(evidencePlay.second)}`}
+                  src={stillSrc}
+                  alt={
+                    evidencePlay.clip === TRY_CLIP
+                      ? `Still from your clip near ${fmtClock(evidencePlay.second)}`
+                      : `Community report still near ${fmtClock(evidencePlay.second)}`
+                  }
                   className="mt-2 block h-auto w-full rounded bg-black"
                 />
               ) : (

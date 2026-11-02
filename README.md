@@ -96,6 +96,27 @@ not alerted (already past, going the other way, or arriving after it clears).
 Northbound drivers are never notified, and you get no warning — you're
 already past it — just a thanks for helping other drivers.
 
+## Community board
+
+A confirmed `/try` incident can be posted to the live map: the post is
+snapped to the nearest major road (within 300 m), carries the verdict subset
+and the agent's clearance range plus up to 2 blurred stills (≤ 80 KB each),
+and expires after 2 hours. Posts live in Upstash Redis — no IPs or tryIds,
+`Cache-Control: no-store` — at most 2 per IP per day (owner exempt).
+
+Every visitor's `/sim` polls the board every 15 s and shows community pins
+("Community report (demo)"). The same warning logic applies: if your planned
+trip passes a pin ahead and you'd arrive before its highMin, you get the
+warning card with stay / reroute / wait options. A follow-up post within
+500 m attaches as a new report (Level 3 re-assesses); two "road looks clear"
+posts clear the pin; the owner can delete any entry.
+
+Verified: an 18-assertion direct handler battery (snap, quota, corridor,
+duplicate, follow-up attach with live L3, two-clears clearing, owner delete,
+TTL post and prune, natural 2 h expiry, privacy scan) passes 18/18; the /try
+post flow and the /sim warn / no-warn sides were checked in two browser
+contexts (see the step 8f commit).
+
 ## How the clearance time is estimated
 
 These are planning estimates, not learned from real clearance records:
@@ -162,6 +183,7 @@ Commit messages before this point say 'Day 1–3'; these were build steps, all c
 | Oct 29 | Step 8c fix: /try live calls bypass the snapshot gate safely |
 | Oct 29 | Step 8d: blur faces and plates in /try results |
 | Oct 29 | Step 8e: network demo — one camera report, many drivers; /try quota and owner pass |
+| Oct 30 | Step 8f: shared community incident board with route-based warnings |
 
 ## Run locally
 

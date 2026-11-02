@@ -9,6 +9,7 @@ import {
   tryAddCost,
   tryLoad,
   TryClientError,
+  tryPatch,
   tryPublicError,
 } from '@/lib/try-limits';
 
@@ -56,6 +57,14 @@ export async function POST(req: Request): Promise<Response> {
       { liveAuthorized: true },
     );
     const cost = await tryAddCost(tryId, cached ? 0 : result.estUSD);
+    // Persist the flag (no step advance): all-clear board posts re-read it.
+    await tryPatch(tryId, {
+      quicklookJson: JSON.stringify({
+        flag: result.quicklook.flag,
+        reasons: result.quicklook.reasons,
+        confidence: result.quicklook.confidence,
+      }),
+    });
     return Response.json({
       flag: result.quicklook.flag,
       reasons: result.quicklook.reasons,
