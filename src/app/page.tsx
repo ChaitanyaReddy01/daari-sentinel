@@ -57,31 +57,42 @@ export default function Home() {
   const stripRef = useRef<HTMLOListElement>(null);
 
   // Reveal the how-it-works steps once, in sequence, when scrolled into view.
+  // The steps must never stay invisible: reduced motion, a missing observer,
+  // or a stalled observer all show them immediately (at most 1.5 s in).
   useEffect(() => {
     const el = stripRef.current;
     if (!el) return;
     const items = Array.from(el.querySelectorAll<HTMLElement>('.reveal'));
     if (items.length === 0) return;
-    if (
-      typeof window.matchMedia === 'function' &&
-      window.matchMedia('(prefers-reduced-motion: reduce)').matches
-    ) {
+    const show = () => {
       for (const item of items) item.classList.add('on');
+    };
+    if (
+      (typeof window.matchMedia === 'function' &&
+        window.matchMedia('(prefers-reduced-motion: reduce)').matches) ||
+      typeof IntersectionObserver === 'undefined'
+    ) {
+      show();
       return;
     }
+    const fallback = setTimeout(show, 1500);
     const io = new IntersectionObserver(
       (entries) => {
         for (const e of entries) {
           if (e.isIntersecting) {
-            for (const item of items) item.classList.add('on');
+            clearTimeout(fallback);
+            show();
             io.disconnect();
           }
         }
       },
-      { threshold: 0.25 },
+      { threshold: 0.15 },
     );
     io.observe(el);
-    return () => io.disconnect();
+    return () => {
+      clearTimeout(fallback);
+      io.disconnect();
+    };
   }, []);
 
   return (
