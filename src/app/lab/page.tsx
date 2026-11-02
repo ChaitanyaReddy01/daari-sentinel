@@ -473,7 +473,7 @@ export default function LabPage() {
   return (
     <main className="mx-auto min-h-screen w-full max-w-5xl bg-white px-4 py-6 text-stone-900">
       <header className="flex flex-wrap items-baseline justify-between gap-2">
-        <h1 className="text-2xl font-bold tracking-tight">Perception Lab</h1>
+        <h1 className="text-2xl font-bold tracking-tight">Under the hood</h1>
         <p className="text-sm text-stone-600 tabular-nums">
           Spent so far: <span className="font-semibold text-stone-900">{fmtUSD(spent)}</span> of{' '}
           {fmtUSD(budget)}

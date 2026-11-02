@@ -29,6 +29,18 @@ import {
 } from './network';
 import { clearanceEstimate } from '@/lib/clearance';
 import {
+  clockToMin,
+  confidencePhrase,
+  DEMO_CAPTIONS,
+  FLIGHT_CUTOFF_MIN,
+  FLIGHT_LINE,
+  NET_CAPTION_OPEN,
+  netResultLine,
+  stagePhrase,
+  typePhrase,
+  useAnimatedNumber,
+} from '@/lib/present';
+import {
   DEMO_EVENTS,
   EXIT27,
   METERS_PER_MILE,
@@ -313,10 +325,6 @@ const TYPE_PIN: Record<string, { letter: string; color: string }> = {
   unknown: { letter: '?', color: '#78716c' },
 };
 
-function pretty(value: string): string {
-  return value.replace(/_/g, ' ');
-}
-
 function fmtUSD(n: number): string {
   if (n === 0) return '$0';
   if (n < 0.01) return `$${n.toFixed(4)}`;
@@ -344,10 +352,6 @@ function reportNumber(reportId: string): string {
 /** The model sometimes prefixes narrowsIf with "Narrows if" itself. */
 function stripNarrowsPrefix(s: string): string {
   return s.replace(/^\s*narrows\s+if\s*:?\s*/i, '');
-}
-
-function capFirst(s: string): string {
-  return s.length === 0 ? s : s[0].toUpperCase() + s.slice(1);
 }
 
 /** Travel bearing (deg) of a route at arclength s, from its segment. */
@@ -410,6 +414,25 @@ function loadMapsApi(key: string): Promise<void> {
  * Three-canvas overlay in the top pane (polylines render above overlayLayer
  * in this Maps build): traffic dots, congestion stretches, then your arrow.
  */
+/**
+ * Step 10: cached reduced-motion flag for frame-rate canvas code (the CSS
+ * side is handled by a media query). Listener keeps it live; SSR-safe.
+ */
+let REDUCED_MOTION = false;
+let reducedMotionInit = false;
+function reducedMotion(): boolean {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return false;
+  if (!reducedMotionInit) {
+    reducedMotionInit = true;
+    const q = window.matchMedia('(prefers-reduced-motion: reduce)');
+    REDUCED_MOTION = q.matches;
+    q.addEventListener('change', () => {
+      REDUCED_MOTION = q.matches;
+    });
+  }
+  return REDUCED_MOTION;
+}
+
 function createCarsOverlay(
   google: any,
   map: any,
@@ -599,6 +622,21 @@ export default function SimPage() {
   const communityStillsRef = useRef(new Map<string, { seconds: number; jpeg: string }[]>());
   const boardUpdatedRef = useRef(new Map<string, number>());
   const [showLive, setShowLive] = useState(true);
+  // Step 10 presentation state: guided captions, Why?/Explore drawers, the
+  // photo scan-line counter, and canvas animation side-channels (refs only).
+  const [captionsSkipped, setCaptionsSkipped] = useState(false);
+  const [shownCaption, setShownCaption] = useState(0);
+  const captionShownAtRef = useRef(0);
+  const [whyOpen, setWhyOpen] = useState(false);
+  const [exploreOpen, setExploreOpen] = useState(false);
+  const [checking, setChecking] = useState(0);
+  const checkingRef = useRef(0);
+  const [warnShownMin, setWarnShownMin] = useState<number | null>(null);
+  const warnAnimRef = useRef({ key: '', raf: 0, animating: false });
+  const pulseRef = useRef(new Map<number, number>());
+  const flashRef = useRef<{ lat: number; lng: number; t0: number }[]>([]);
+  const netColorRef = useRef(new Map<string, { color: string; t0: number }>());
+  const routeDrawRef = useRef(0);
   const autoStartRef = useRef(false);
   const [ladder, setLadder] = useState({ checks: 0, escalated: 0 });
   const ladderTimeRef = useRef(0);
@@ -1017,6 +1055,18 @@ export default function SimPage() {
     boardUpdatedRef.current = new Map();
     // Live community reports default on for plan-a-trip drives, off in demos.
     setShowLive(!demo);
+    // Step 10: fresh presentation state per drive.
+    cancelAnimationFrame(routeDrawRef.current);
+    pulseRef.current = new Map();
+    flashRef.current = [];
+    netColorRef.current = new Map();
+    setCaptionsSkipped(false);
+    setShownCaption(0);
+    captionShownAtRef.current = Date.now();
+    setWhyOpen(false);
+    setExploreOpen(false);
+    setWarnShownMin(null);
+    warnAnimRef.current = { key: '', raf: 0, animating: false };
     if (demo) {
       demoAnchorRef.current = (() => {
         const snap = nearestOnRoute(routes[0].geom, EXIT27);
@@ -1053,7 +1103,7 @@ export default function SimPage() {
         },
         true,
       );
-      showToast('Demo started: I-95 Exit 27 scenario.');
+      // Step 10: no toast here — the guided caption introduces the demo.
     } catch (err) {
       setPlanError(err instanceof Error ? err.message : 'Demo route failed.');
     } finally {
@@ -1092,7 +1142,7 @@ export default function SimPage() {
     setNetCountsState(netCountsRef.current);
     setNetOn(true);
     setShowLive(false);
-    showToast('Network demo: drive to Norwalk — your camera reports what it sees.');
+    // Step 10: no toast here — the guided caption introduces the demo.
   };
 
   // Network demo: tapping a driver dot selects that driver's alert card.
@@ -1216,6 +1266,7 @@ export default function SimPage() {
     })();
     return () => {
       cancelled = true;
+      cancelAnimationFrame(routeDrawRef.current);
       if (clickListener) googleRef.current?.maps?.event?.removeListener(clickListener);
       if (dragListener) googleRef.current?.maps?.event?.removeListener(dragListener);
       if (zoomListener) googleRef.current?.maps?.event?.removeListener(zoomListener);
@@ -1244,6 +1295,7 @@ export default function SimPage() {
     const g = trip.routes[currentIdx]?.geom;
     if (!g) return;
     const google = googleRef.current as any;
+    cancelAnimationFrame(routeDrawRef.current);
     if (routeLineRef.current) routeLineRef.current.setMap(null);
     if (altLineRef.current) {
       altLineRef.current.setMap(null);
@@ -1256,27 +1308,33 @@ export default function SimPage() {
     const pend = pendingSwitchRef.current;
     const alt = pend && choice?.kind === 'reroute' ? trip.routes[pend.altIdx] : null;
     if (alt && pend) {
+      // Step 10: the old road fades to gray dashed while the new route
+      // draws progressively from the car's end (~800 ms). Reduced motion
+      // (or a replaced line mid-flight) shows the final state instantly.
+      const dashedIcons = (opacity: number) => [
+        {
+          icon: {
+            path: 'M 0,-1 0,1',
+            strokeOpacity: opacity,
+            strokeColor: '#9ca3af',
+            strokeWeight: 5,
+            scale: 2,
+          },
+          offset: '0',
+          repeat: '14px',
+        },
+      ];
+      const instant = reducedMotion();
       routeLineRef.current = new google.maps.Polyline({
         path: g.points,
         strokeOpacity: 0,
-        icons: [
-          {
-            icon: {
-              path: 'M 0,-1 0,1',
-              strokeOpacity: 1,
-              strokeColor: '#9ca3af',
-              strokeWeight: 5,
-              scale: 2,
-            },
-            offset: '0',
-            repeat: '14px',
-          },
-        ],
+        icons: dashedIcons(instant ? 1 : 0),
         zIndex: 1,
         map,
       });
+      const altPts = alt.geom.points;
       altLineRef.current = new google.maps.Polyline({
-        path: alt.geom.points,
+        path: instant ? altPts : altPts.slice(0, 2),
         strokeColor: ROUTE_BLUE,
         strokeWeight: 5,
         strokeOpacity: 0.95,
@@ -1302,6 +1360,33 @@ export default function SimPage() {
           strokeWeight: 2,
         },
       });
+      if (!instant && altPts.length > 2) {
+        const t0 = performance.now();
+        const step = (now: number) => {
+          const p = Math.min(1, (now - t0) / 800);
+          const eased = 1 - (1 - p) * (1 - p);
+          const altLine = altLineRef.current;
+          const oldLine = routeLineRef.current;
+          if (!altLine || !oldLine) return;
+          try {
+            altLine.setPath(altPts.slice(0, Math.max(2, Math.floor(altPts.length * eased))));
+            oldLine.setOptions({ icons: dashedIcons(Math.min(1, (now - t0) / 300)) });
+          } catch {
+            return;
+          }
+          if (p < 1) {
+            routeDrawRef.current = requestAnimationFrame(step);
+          } else {
+            try {
+              altLine.setPath(altPts);
+              oldLine.setOptions({ icons: dashedIcons(1) });
+            } catch {
+              // Lines replaced mid-flight; the new effect owns them now.
+            }
+          }
+        };
+        routeDrawRef.current = requestAnimationFrame(step);
+      }
       return;
     }
     routeLineRef.current = new google.maps.Polyline({
@@ -1365,21 +1450,41 @@ export default function SimPage() {
       // Network demo drivers, colored by state, on the same canvas.
       if (isNetworkRef.current) {
         const px: { id: string; x: number; y: number }[] = [];
+        const still = reducedMotion();
         for (const d of netDriversRef.current) {
           const p = driverPos(d);
           if (!p) continue;
           const q = toPx(p);
           if (!q) continue;
           const sel = d.id === netSelectedRef.current;
+          const color = driverColor(d);
+          // Step 10: dots fade/scale into a new color over 300 ms.
+          let alpha = 1;
+          let radius = sel ? 7 : 5;
+          if (!still) {
+            const prev = netColorRef.current.get(d.id);
+            if (!prev || prev.color !== color) {
+              netColorRef.current.set(d.id, { color, t0: performance.now() });
+            }
+            const el = performance.now() - (netColorRef.current.get(d.id)?.t0 ?? 0);
+            if (el < 300) {
+              const t = el / 300;
+              alpha = 0.35 + 0.65 * t;
+              radius *= 0.6 + 0.4 * t;
+            }
+          }
+          dctx.save();
+          dctx.globalAlpha = alpha;
           dctx.beginPath();
-          dctx.arc(q.x, q.y, sel ? 7 : 5, 0, Math.PI * 2);
-          dctx.fillStyle = driverColor(d);
+          dctx.arc(q.x, q.y, radius, 0, Math.PI * 2);
+          dctx.fillStyle = color;
           dctx.fill();
           if (sel) {
             dctx.lineWidth = 2;
             dctx.strokeStyle = '#ffffff';
             dctx.stroke();
           }
+          dctx.restore();
           px.push({ id: d.id, x: q.x, y: q.y });
         }
         netPxRef.current = px;
@@ -1412,6 +1517,53 @@ export default function SimPage() {
     if (!actx) return;
     actx.setTransform(dpr, 0, 0, dpr, 0, 0);
     actx.clearRect(0, 0, w, h);
+    // Step 10: incident pins pulse (2 soft rings, 3 s) when created or
+    // updated; a cleared pin flashes green once, then fades with the pin.
+    if (!reducedMotion()) {
+      const nowMs = performance.now();
+      const stale: number[] = [];
+      pulseRef.current.forEach((t0, id) => {
+        const elapsed = nowMs - t0;
+        if (elapsed < 0 || elapsed > 3000) {
+          if (elapsed > 3000) stale.push(id);
+          return;
+        }
+        const inc = incidentsRef.current.find((i) => i.id === id);
+        if (!inc) {
+          stale.push(id);
+          return;
+        }
+        const qp = toPx({ lat: inc.lat, lng: inc.lng });
+        if (!qp) return;
+        const st = TYPE_PIN[inc.type] ?? TYPE_PIN.unknown;
+        for (let k = 0; k < 2; k += 1) {
+          const local = elapsed - k * 900;
+          if (local < 0 || local > 2100) continue;
+          const t = local / 2100;
+          actx.beginPath();
+          actx.arc(qp.x, qp.y, 12 + t * 30, 0, Math.PI * 2);
+          actx.strokeStyle = st.color;
+          actx.globalAlpha = 0.55 * (1 - t);
+          actx.lineWidth = 3;
+          actx.stroke();
+        }
+        actx.globalAlpha = 1;
+      });
+      for (const id of stale) pulseRef.current.delete(id);
+      flashRef.current = flashRef.current.filter((f) => nowMs - f.t0 < 700);
+      for (const f of flashRef.current) {
+        const t = (nowMs - f.t0) / 700;
+        const qp = toPx(f);
+        if (!qp) continue;
+        actx.beginPath();
+        actx.arc(qp.x, qp.y, 10 + t * 22, 0, Math.PI * 2);
+        actx.strokeStyle = '#16a34a';
+        actx.globalAlpha = 0.7 * (1 - t);
+        actx.lineWidth = 4;
+        actx.stroke();
+        actx.globalAlpha = 1;
+      }
+    }
     const you = yourCarRef.current;
     const p0 = pointAt(yours, you.s);
     const p1 = pointAt(yours, Math.min(yours.length, you.s + 40));
@@ -1746,32 +1898,40 @@ export default function SimPage() {
     reports: SimReport[],
     previous: AgentAssessment | null,
   ): Promise<IncidentAssessment | null> => {
+    // Step 10: scan-line side-channel (no behavior change).
+    checkingRef.current += 1;
+    setChecking(checkingRef.current);
     try {
-      const res = await fetch('/api/sim/assess', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          reports: reports.map((r) => ({
-            reportId: r.reportId,
-            clip: r.clip,
-            direction: r.direction,
-            t: r.t,
-          })),
-          previousAssessment: previous,
-        }),
-      });
-      if (!res.ok) return null;
-      const data = (await res.json()) as {
-        stored: {
-          assessment: AgentAssessment;
-          source: 'muse-wonder' | 'fallback table';
-          notes: string[];
-          estUSD: number;
+      try {
+        const res = await fetch('/api/sim/assess', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            reports: reports.map((r) => ({
+              reportId: r.reportId,
+              clip: r.clip,
+              direction: r.direction,
+              t: r.t,
+            })),
+            previousAssessment: previous,
+          }),
+        });
+        if (!res.ok) return null;
+        const data = (await res.json()) as {
+          stored: {
+            assessment: AgentAssessment;
+            source: 'muse-wonder' | 'fallback table';
+            notes: string[];
+            estUSD: number;
+          };
         };
-      };
-      return { ...data.stored, atT: simTimeRef.current };
-    } catch {
-      return null;
+        return { ...data.stored, atT: simTimeRef.current };
+      } catch {
+        return null;
+      }
+    } finally {
+      checkingRef.current = Math.max(0, checkingRef.current - 1);
+      setChecking(checkingRef.current);
     }
   };
 
@@ -1882,6 +2042,7 @@ export default function SimPage() {
     incidentsRef.current = [...incidentsRef.current, inc];
     setSelectedId(id);
     lastChangeRef.current = t;
+    pulseRef.current.set(id, performance.now()); // Step 10: pin pulse.
     // New incidents change alternative scoring even when they are not warned.
     void refreshCandidates().then(() => {
       if (warnedIdsRef.current.length > 0) computeOptions();
@@ -1935,6 +2096,7 @@ export default function SimPage() {
     setIncidents((list) => list.map((i) => (i.id === incidentId ? next : i)));
     incidentsRef.current = incidentsRef.current.map((i) => (i.id === incidentId ? next : i));
     setSelectedId(incidentId);
+    pulseRef.current.set(incidentId, performance.now()); // Step 10: pin pulse.
     if (cleared) {
       handleCleared(next);
       return;
@@ -1942,29 +2104,25 @@ export default function SimPage() {
     if (next.stage !== prev.stage) lastChangeRef.current = t;
     if (warnedIdsRef.current.length > 0) {
       const warnedSelf = warnedIdsRef.current.includes(incidentId);
+      const stageWords = stagePhrase(next.stage) ?? 'update';
       if (assessed && warnedSelf && next.stage !== prev.stage) {
         const c = assessed.assessment.clearance;
         const range = `clears in ${Math.round(c.lowMin)}–${Math.round(c.highMin)} min`;
-        alert(
-          `Updated: ${pretty(next.stage)}, ${range}`,
-          `Updated. ${pretty(next.stage)}, ${range}.`,
-        );
+        alert(`Updated: ${stageWords}, ${range}`, `Updated. ${stageWords}, ${range}.`);
       } else if (!assessed && warnedSelf && next.stage !== prev.stage) {
         const clear = clearanceEstimate(next.type, next.stage, next.severity);
         const range =
           clear.loMin !== null && clear.hiMin !== null
             ? `clears in ${clear.loMin}–${clear.hiMin} min`
             : 'work zone, ongoing';
-        alert(
-          `Updated: ${pretty(next.stage)}, ${range}`,
-          `Updated. ${pretty(next.stage)}, ${range}.`,
-        );
+        alert(`Updated: ${stageWords}, ${range}`, `Updated. ${stageWords}, ${range}.`);
       }
       void refreshCandidates().then(() => computeOptions());
     }
   };
 
   const handleCleared = (incident: SimIncident) => {
+    flashRef.current.push({ lat: incident.lat, lng: incident.lng, t0: performance.now() });
     lastChangeRef.current = simTimeRef.current;
     warnedIdsRef.current = warnedIdsRef.current.filter((id) => id !== incident.id);
     setWarnedIds(warnedIdsRef.current);
@@ -2675,12 +2833,12 @@ export default function SimPage() {
     .filter((i): i is SimIncident => !!i);
   const warned = warnedList[0] ?? null;
   let warnDist = '';
-  let warnTime = '';
-  let warnHeadline = '';
-  let warnRangeLine = '';
+  let warnLikely: number | null = null;
+  let warnLow: number | null = null;
+  let warnHigh: number | null = null;
+  let warnConf: 'high' | 'medium' | 'low' | null = null;
   let warnLowReason: string | null = null;
   let warnReason = '';
-  let warnNarrows = '';
   let warnSource: 'muse-wonder' | 'fallback table' | null = null;
   let warnUnconfirmed: string | null = null;
   const warnEntries: { id: number; name: string; dist: string; about: string }[] = [];
@@ -2708,9 +2866,6 @@ export default function SimPage() {
     }
     const wS = incidentSOn(warned, planRoute.geom);
     warnDist = fmtMi(Math.max(0, wS - aS));
-    warnTime = fmtMin(
-      projectToSWithSpeeds(aS, wS, zonesRef.current, planRoute.speeds, YOUR_BASE_MPS),
-    );
     const latest = warned.assessments[warned.assessments.length - 1] ?? null;
     if (latest) {
       const remaining = displayClearance(
@@ -2719,30 +2874,23 @@ export default function SimPage() {
         warned.reports.some((r) => !r.incident),
       );
       warnSource = latest.source;
+      warnLikely = remaining.likelyMin;
+      warnLow = remaining.lowMin;
+      warnHigh = remaining.highMin;
+      warnConf = latest.assessment.confidence;
       if (remaining.unconfirmed && remaining.unconfirmedLabel) {
-        warnHeadline = 'Clears in about 5 min';
-        warnRangeLine = 'Range 0–10 min';
         warnUnconfirmed = remaining.unconfirmedLabel;
-      } else {
-        warnHeadline = `Clears in about ${remaining.likelyMin} min`;
-        warnRangeLine = `Range ${remaining.lowMin}–${remaining.highMin} min · ${capFirst(latest.assessment.confidence)} confidence`;
       }
       if (latest.assessment.confidence === 'low') {
         warnLowReason =
           latest.assessment.uncertainties[0] ?? latest.assessment.rangeReason;
       }
       warnReason = latest.assessment.rangeReason;
-      warnNarrows = stripNarrowsPrefix(latest.assessment.narrowsIf);
     } else {
       const clear = clearanceEstimate(warned.type, warned.stage, warned.severity);
-      warnHeadline =
-        clear.likelyMin !== null
-          ? `Clears in about ${clear.likelyMin} min`
-          : 'Work zone, ongoing';
-      warnRangeLine =
-        clear.loMin !== null && clear.hiMin !== null
-          ? `Range ${clear.loMin}–${clear.hiMin} min`
-          : '';
+      warnLikely = clear.likelyMin;
+      warnLow = clear.loMin;
+      warnHigh = clear.hiMin;
     }
   }
   const rOpt = options?.reroute;
@@ -2773,6 +2921,142 @@ export default function SimPage() {
       rerouteBanner = `Rerouting: exit at ${rOpt.decideLabel} in ${nMin} min`;
     }
   }
+
+  // ---- Step 10: alert-card "about N min" animation ----
+  // New assessments count to the new value over 600 ms; the live countdown
+  // between reports snaps. Reduced motion always snaps.
+  const warnAssessKey = warned ? `${warned.id}:${warned.assessments.length}` : 'none';
+  useEffect(() => {
+    if (warnLikely === null || !warned) {
+      warnAnimRef.current.key = warnAssessKey;
+      warnAnimRef.current.animating = false;
+      if (warnShownMin !== null) setWarnShownMin(null);
+      return;
+    }
+    if (warnAnimRef.current.animating && warnAnimRef.current.key === warnAssessKey) return;
+    if (warnAssessKey !== warnAnimRef.current.key || warnShownMin === null) {
+      warnAnimRef.current.key = warnAssessKey;
+      const from = warnShownMin ?? warnLikely;
+      if (reducedMotion() || from === warnLikely) {
+        warnAnimRef.current.animating = false;
+        if (warnShownMin !== warnLikely) setWarnShownMin(warnLikely);
+        return;
+      }
+      warnAnimRef.current.animating = true;
+      const t0 = performance.now();
+      const step = (now: number) => {
+        const p = Math.min(1, (now - t0) / 600);
+        const eased = 1 - (1 - p) * (1 - p);
+        setWarnShownMin(Math.round(from + (warnLikely - from) * eased));
+        if (p < 1) {
+          warnAnimRef.current.raf = requestAnimationFrame(step);
+        } else {
+          warnAnimRef.current.animating = false;
+        }
+      };
+      cancelAnimationFrame(warnAnimRef.current.raf);
+      warnAnimRef.current.raf = requestAnimationFrame(step);
+      return () => {
+        cancelAnimationFrame(warnAnimRef.current.raf);
+        warnAnimRef.current.animating = false;
+      };
+    }
+    if (warnShownMin !== warnLikely) setWarnShownMin(warnLikely);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [warnLikely, warned, warnAssessKey, warnShownMin]);
+
+  // ---- Step 10: "Best: <option> · <story or saves>" line ----
+  // In the I-95 demo, a best arrival before 1:15 PM still makes Maya's 2 PM
+  // flight; otherwise (and on other drives) the line shows time saved.
+  let bestLabel = '';
+  let bestTail = '';
+  if (options && warned) {
+    const effBest =
+      (options.fastest === 'reroute' && !rOpt?.available) ||
+      (options.fastest === 'stop' && !options.stop)
+        ? 'stay'
+        : options.fastest;
+    const flightTail = (clock: string): string | null => {
+      if (!isDemo) return null;
+      const m = clockToMin(clock);
+      return m !== null && m < FLIGHT_CUTOFF_MIN ? FLIGHT_LINE : null;
+    };
+    if (effBest === 'reroute' && rOpt?.available) {
+      bestLabel = `Reroute via ${rOpt.viaName}`;
+      const clock = rOpt.arrivalClock ?? '';
+      const save =
+        options.rerouteTotalMin !== null
+          ? Math.round(options.stayTotalMin - options.rerouteTotalMin)
+          : 0;
+      bestTail = flightTail(clock) ?? (save >= 1 ? `saves ${save} min` : `arrive ${clock}`);
+    } else if (effBest === 'stop' && options.stop) {
+      bestLabel = `Wait at ${options.stop.name}`;
+      const clock = options.stop.arrivalClock;
+      const save =
+        options.stopTotalMin !== null
+          ? Math.round(options.stayTotalMin - options.stopTotalMin)
+          : 0;
+      bestTail = flightTail(clock) ?? (save >= 1 ? `saves ${save} min` : `arrive ${clock}`);
+    } else {
+      bestLabel = `Stay on ${options.mainName}`;
+      bestTail = flightTail(options.stayArrival) ?? `arrive ${options.stayArrival}`;
+    }
+  }
+  const warnedEvidence =
+    warned?.assessments[warned.assessments.length - 1]?.assessment.evidence ?? [];
+  const warnedStageWords = warned && warned.active ? stagePhrase(warned.stage) : null;
+
+  // Why? closes whenever a different incident takes the card.
+  const warnedCardId = warned?.id ?? null;
+  useEffect(() => {
+    setWhyOpen(false);
+  }, [warnedCardId]);
+
+  // Tapping a network driver dot opens Explore more to show their card.
+  useEffect(() => {
+    if (netSelected !== null) setExploreOpen(true);
+  }, [netSelected]);
+
+  // ---- Step 10: guided captions (derived story layer; never drives logic) ----
+  const demoIncident = isDemo
+    ? incidents.find((i) => i.id === demoRef.current.incidentId)
+    : undefined;
+  let captionTarget: number | null = null;
+  let captionKind: 'demo' | 'net' = 'demo';
+  if (!captionsSkipped) {
+    if (netOn) {
+      captionKind = 'net';
+      captionTarget = netThanks ? 1 : 0;
+    } else if (isDemo) {
+      captionKind = 'demo';
+      if (!demoIncident) captionTarget = 0;
+      else if (!demoIncident.active) captionTarget = 4;
+      else if (demoIncident.reports.length >= 3) captionTarget = 3;
+      else if (warnedIds.includes(demoIncident.id) && options) captionTarget = 2;
+      else captionTarget = 1;
+    }
+  }
+  // Captions advance automatically but never step back, one beat at a time,
+  // and each stays up at least ~2.5 s so it can be read before the next
+  // beat arrives (fast early beats queue instead of skipping).
+  useEffect(() => {
+    if (captionTarget === null || captionTarget <= shownCaption) return;
+    const wait = Math.max(0, 2500 - (Date.now() - captionShownAtRef.current));
+    const t = setTimeout(() => {
+      captionShownAtRef.current = Date.now();
+      setShownCaption(shownCaption + 1);
+    }, wait);
+    return () => clearTimeout(t);
+  }, [captionTarget, shownCaption]);
+  const captionText =
+    captionKind === 'net'
+      ? shownCaption >= 1
+        ? netResultLine(netCountsState.notified, netCountsState.savedDriverMin)
+        : NET_CAPTION_OPEN
+      : DEMO_CAPTIONS[Math.min(shownCaption, DEMO_CAPTIONS.length - 1)];
+
+  // Network "helped N drivers" counter ticks up as drivers are alerted.
+  const animatedNotified = useAnimatedNumber(netCountsState.notified, 400);
 
   const tryStillFor = (second: number): string | null => {
     const stills = tryStillsRef.current;
@@ -2885,6 +3169,7 @@ export default function SimPage() {
     setIncidents(incidentsRef.current);
     communityStillsRef.current.set(b.id, b.stills);
     boardUpdatedRef.current.set(b.id, b.updatedAt);
+    pulseRef.current.set(known.id, performance.now()); // Step 10: pin pulse.
     lastChangeRef.current = simTimeRef.current;
     void refreshCandidates().then(() => {
       if (warnedIdsRef.current.length > 0) computeOptions();
@@ -3129,8 +3414,8 @@ export default function SimPage() {
           Play I-95 demo
         </button>
         <p className="text-sm text-stone-600">
-          Scripted scenario: New Haven → Times Square with four incident reports near Exit 27,
-          Bridgeport.
+          Maya is driving to her 2 PM flight when a road camera spots a crash near Exit 27,
+          Bridgeport — watch her best choice, then the road clearing.
         </p>
         <button
           type="button"
@@ -3140,8 +3425,8 @@ export default function SimPage() {
           Play network demo
         </button>
         <p className="text-sm text-stone-600">
-          Network scenario: you drive New Haven → JFK; your camera reports a crash near Norwalk
-          and about 40 drivers on many trips react to it.
+          Maya&apos;s dashcam spots a crash near Norwalk — see which of the ~40 drivers on
+          nearby trips it helps.
         </p>
         <footer className="text-xs text-stone-500">
           Demo uses stock road-camera footage as stand-ins for one incident.
@@ -3189,125 +3474,45 @@ export default function SimPage() {
           </div>
         )}
         {arming && (
-          <p className="absolute inset-x-2 bottom-2 rounded-md bg-stone-900/90 px-3 py-2 text-center text-sm font-semibold text-white">
+          <p className="absolute inset-x-2 bottom-2 z-40 rounded-md bg-stone-900/90 px-3 py-2 text-center text-sm font-semibold text-white">
             Tap the map to drop an incident here
           </p>
+        )}
+        {captionTarget !== null && (
+          <div className="absolute inset-x-2 bottom-2 z-30 flex items-center gap-2 rounded-md bg-stone-900/90 px-3 py-2 shadow-lg">
+            <p
+              key={`${captionKind}-${shownCaption}`}
+              aria-live="polite"
+              className="anim-rise flex-1 text-center text-sm font-semibold text-white"
+            >
+              {captionText}
+            </p>
+            <button
+              type="button"
+              onClick={() => setCaptionsSkipped(true)}
+              className="shrink-0 rounded px-2 py-1 text-xs font-semibold text-stone-300 underline hover:text-white"
+            >
+              Skip
+            </button>
+          </div>
         )}
       </div>
 
       <div className="flex flex-1 flex-col gap-3 overflow-y-auto p-3 md:h-dvh">
-        <section aria-label="Sentinel activity" className="rounded-lg border border-stone-200 bg-white p-3">
-          <h2 className="text-sm font-semibold">Sentinel activity</h2>
-          <p className="text-sm tabular-nums text-stone-700">
-            {ladder.checks.toLocaleString()} checks · {ladder.escalated} escalated ·{' '}
-            {incidents.reduce((a, i) => a + i.assessments.length, 0)} map updates · $
-            {estimateLadderCost(
-              { quicklooks: ladder.checks, escalated: ladder.escalated },
-              {
-                quicklook: LADDER_COSTS.quicklook,
-                fullCheck: LADDER_COSTS.detect + LADDER_COSTS.verdict + LADDER_COSTS.assess,
-              },
-            ).toFixed(2)}
-          </p>
-          <p className="text-xs text-stone-500">
-            Camera cars replay a cached quick look ~1/min; the map changes only on real events.
-          </p>
-        </section>
         {netOn && (
           <section aria-label="Network effect" className="rounded-lg border border-emerald-300 bg-emerald-50 p-3">
-            <h2 className="text-sm font-semibold">Network effect: one camera report, many drivers</h2>
             {!netThanks ? (
               <p className="text-sm text-stone-700">
-                Drive to Norwalk — your camera reports what it sees.
+                Drive to Norwalk — Maya&apos;s dashcam reports what it sees.
               </p>
             ) : (
-              <>
-                <p className="text-sm text-stone-700">
-                  Thanks: your camera&apos;s report is helping other drivers.
-                </p>
-                <p className="mt-1 text-sm tabular-nums text-stone-800">
-                  Your camera&apos;s report reached {netCountsState.notified} drivers ·{' '}
-                  {netCountsState.rerouted} rerouted · {netCountsState.stayed} stayed ·{' '}
-                  {netCountsState.waiting} stopping to wait · est.{' '}
-                  {(netCountsState.savedDriverMin / 60).toFixed(1)} driver-hours saved
-                </p>
-                <p className="text-sm text-stone-600">
-                  {netCountsState.unaffected} drivers not alerted (already past, other direction,
-                  or arriving after it clears)
-                </p>
-              </>
+              <p className="text-sm font-semibold tabular-nums text-stone-800">
+                {netResultLine(
+                  Math.round(animatedNotified),
+                  netCountsState.savedDriverMin,
+                )}
+              </p>
             )}
-            <p className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-stone-600">
-              <span><span className="mr-1 inline-block h-2 w-2 rounded-full bg-stone-400" />unaffected</span>
-              <span><span className="mr-1 inline-block h-2 w-2 rounded-full bg-amber-500" />deciding</span>
-              <span><span className="mr-1 inline-block h-2 w-2 rounded-full bg-blue-600" />rerouted</span>
-              <span><span className="mr-1 inline-block h-2 w-2 rounded-full bg-red-600" />stayed</span>
-              <span><span className="mr-1 inline-block h-2 w-2 rounded-full bg-purple-600" />waiting</span>
-            </p>
-            {netSelected !== null &&
-              (() => {
-                const d = netDriversRef.current.find((x) => x.id === netSelected);
-                if (!d) return null;
-                const inc = netIncidentNow();
-                const opts = scoreDriver(d, inc ? [inc] : [], netLoadsRef.current);
-                const state =
-                  d.status === 'alerted'
-                    ? 'Alerted — deciding…'
-                    : d.status === 'rerouted'
-                      ? `Rerouted onto ${d.routeNames[d.routeIdx]}`
-                      : d.status === 'stayed'
-                        ? 'Stayed in the jam'
-                        : d.status === 'waiting'
-                          ? 'Stopping to wait'
-                          : d.arrived
-                            ? 'Arrived'
-                            : 'Not alerted';
-                return (
-                  <div className="mt-2 rounded-md border border-stone-200 bg-white p-2">
-                    <div className="flex items-start justify-between gap-2">
-                      <p className="text-sm font-semibold">{d.tripLabel}</p>
-                      <button
-                        type="button"
-                        aria-label="Close driver card"
-                        onClick={() => {
-                          netSelectedRef.current = null;
-                          setNetSelected(null);
-                        }}
-                        className="min-h-[44px] min-w-[44px] rounded-md border border-stone-300 px-2 text-sm font-semibold"
-                      >
-                        ✕
-                      </button>
-                    </div>
-                    <p className="text-sm text-stone-700">{state}</p>
-                    {d.choice !== null && (
-                      <p className="text-sm text-stone-600">
-                        Chose {d.choice}
-                        {d.savedMin > 0.5 ? ` · saves about ${Math.round(d.savedMin)} min vs staying` : ''}.
-                      </p>
-                    )}
-                    {d.notifiedAt !== null && (
-                      <ul className="mt-1 space-y-1 text-sm tabular-nums text-stone-700">
-                        <li>
-                          Stay {Math.round(opts.stayMin)} min{opts.best === 'stay' ? ' ✓' : ''}
-                        </li>
-                        {opts.rerouteMin !== null && opts.rerouteIdx !== null && (
-                          <li>
-                            Reroute via {d.routeNames[opts.rerouteIdx]} {Math.round(opts.rerouteMin)} min
-                            {opts.best === 'reroute' ? ' ✓' : ''}
-                            {opts.fewestDelaysReason ? ` (${opts.fewestDelaysReason})` : ''}
-                          </li>
-                        )}
-                        {opts.stopMin !== null && opts.stopWaitMin !== null && (
-                          <li>
-                            Stop &amp; wait {Math.round(opts.stopWaitMin)} min, arrive in{' '}
-                            {Math.round(opts.stopMin)} min{opts.best === 'stop' ? ' ✓' : ''}
-                          </li>
-                        )}
-                      </ul>
-                    )}
-                  </div>
-                );
-              })()}
           </section>
         )}
         <section className="rounded-lg border border-stone-200 bg-white p-3">
@@ -3337,22 +3542,6 @@ export default function SimPage() {
           <p className="mt-1 text-sm text-stone-600">
             Your route: {planLabel || '—'}
           </p>
-          <label className="mt-1 flex min-h-[44px] cursor-pointer items-center gap-2 text-sm text-stone-700">
-            <input
-              type="checkbox"
-              checked={showLive}
-              onChange={(e) => {
-                const on = e.target.checked;
-                setShowLive(on);
-                if (!on) purgeCommunityIncidents();
-              }}
-              className="h-5 w-5"
-            />
-            Show live community reports
-          </label>
-          <p className="text-xs text-stone-500">
-            Community reports are AI-checked uploads from visitors; they expire after 2 hours.
-          </p>
           <p className="mt-1 text-sm text-stone-600">
             {hud.arrived
               ? 'Arrived.'
@@ -3367,17 +3556,6 @@ export default function SimPage() {
             >
               {playing ? 'Pause' : 'Play'}
             </button>
-            {SPEEDS.map((s) => (
-              <button
-                key={s}
-                type="button"
-                onClick={() => setSpeed(s)}
-                aria-pressed={speed === s}
-                className={`min-h-[44px] rounded-md border px-4 text-sm font-semibold ${speed === s ? 'border-blue-700 bg-blue-50 text-blue-700' : 'border-stone-300'}`}
-              >
-                {s}x
-              </button>
-            ))}
           </div>
           {choice && (
             <p className="mt-2 rounded-md bg-stone-100 px-3 py-2 text-sm">
@@ -3387,115 +3565,68 @@ export default function SimPage() {
         </section>
 
         {warned && (
-          <section className="rounded-lg border-2 border-red-600 bg-white p-3">
-            <h2 className="font-bold text-red-700">Traffic alert</h2>
-            <ul className="mt-1 flex flex-col gap-1">
-              {warnEntries.map((e) => (
-                <li key={e.id} className="text-sm">
-                  <span className="font-semibold">{e.name}</span>
-                  <br />
-                  <span className="text-stone-600">
-                    {e.dist} ahead · clears in {e.about}
-                  </span>
-                </li>
-              ))}
-            </ul>
-            <div className="mt-1 flex flex-wrap gap-1">
-              {[pretty(warned.type), pretty(warned.stage)].map((c) => (
-                <span key={c} className="rounded bg-stone-100 px-2 py-0.5 text-xs font-semibold">
-                  {c}
-                </span>
-              ))}
-            </div>
-            {warned.thumbnail && (
-              <img
-                src={warned.thumbnail}
-                alt="Incident evidence"
-                className="mt-2 max-h-32 w-full rounded object-cover"
-              />
-            )}
-            <p className="mt-2 text-sm">
-              {warnDist} ahead · about {warnTime} away
+          <section
+            key={warned.id}
+            aria-label="Traffic alert"
+            className="anim-rise rounded-lg border-2 border-red-600 bg-white p-3"
+          >
+            <p className="text-base font-bold text-stone-900">
+              {typePhrase(warned.type)} ahead ·{' '}
+              {warnLikely !== null
+                ? `clears in about ${warnShownMin ?? warnLikely} min`
+                : 'ongoing'}
             </p>
-            <p className="text-sm font-semibold">{warnHeadline}</p>
-            {warnRangeLine && <p className="text-xs text-stone-600">{warnRangeLine}</p>}
-            {warnLowReason && (
-              <p className="text-xs font-semibold text-amber-800">Low confidence: {warnLowReason}</p>
+            {warnedStageWords && (
+              <p className="mt-0.5 text-xs font-semibold text-stone-600">{warnedStageWords}</p>
             )}
-            {warnUnconfirmed && (
-              <p className="text-sm text-amber-800">{warnUnconfirmed}</p>
+            {warnEntries.length > 1 && (
+              <ul className="mt-1 flex flex-col gap-0.5">
+                {warnEntries
+                  .filter((e) => e.id !== warned.id)
+                  .map((e) => (
+                    <li key={e.id} className="text-xs text-stone-600">
+                      Also: {e.name} · {e.dist} ahead · clears in {e.about}
+                    </li>
+                  ))}
+              </ul>
             )}
-            {warnReason && <p className="text-xs text-stone-600">{warnReason}</p>}
-            {warnNarrows && <p className="text-xs text-stone-600">Narrows if: {warnNarrows}</p>}
-            {warnSource && (
-              <p className="text-xs text-stone-500">
-                {warnSource === 'muse-wonder' ? 'AI assessment · Muse Wonder' : 'Estimate · fallback table'}
-              </p>
-            )}
-            {options && (
-              <p className="text-sm">
-                Jam delay if you stay: {fmtMin(options.jamDelayMin * 60)} (
-                {fmtMin(options.jamLoMin * 60)}–{fmtMin(options.jamHiMin * 60)})
-              </p>
-            )}
-            {rOpt?.available && rOpt.decideLabel ? (
-              <p className="text-sm font-semibold">
-                Decide by {rOpt.decideLabel} ({fmtMin((rOpt.decideMin ?? 0) * 60)})
+            {options ? (
+              <p className="mt-1 text-sm text-stone-800">
+                ✅ <span className="font-semibold">Best: {bestLabel}</span> · {bestTail}
               </p>
             ) : (
-              rOpt && !rOpt.available && rOpt.reason && (
-                <p className="text-sm font-semibold text-amber-800">{rOpt.reason}</p>
-              )
+              <p className="mt-1 text-sm text-stone-600">Finding your best option…</p>
             )}
-            {!options && <p className="mt-2 text-sm text-stone-600">Finding your options…</p>}
             {options && (
               <div className="mt-2 flex flex-col gap-2">
-                <button
-                  type="button"
-                  onClick={chooseStay}
-                  className={`min-h-[44px] rounded-md border p-2 text-left text-sm ${options.fastest === 'stay' ? 'border-green-600 bg-green-50' : 'border-stone-300'} ${chosenKind && chosenKind !== 'stay' ? 'opacity-50' : ''}`}
-                >
-                  <span className="font-bold">
-                    STAY on {options.mainName} (your current route){' '}
-                    {chosenKind === 'stay' && <span className="text-blue-700">· Selected ✓</span>}
-                    {options.fastest === 'stay' && <span className="text-green-700">· Fastest</span>}
-                  </span>
-                  <br />
-                  Arrive {options.stayArrival} ({options.stayLoClock}–{options.stayHiClock})
-                </button>
-                {rOpt?.available ? (
+                {rOpt?.available && (
                   <button
                     type="button"
                     onClick={chooseReroute}
                     className={`min-h-[44px] rounded-md border p-2 text-left text-sm ${options.fastest === 'reroute' ? 'border-green-600 bg-green-50' : 'border-stone-300'} ${chosenKind && chosenKind !== 'reroute' ? 'opacity-50' : ''}`}
                   >
                     <span className="font-bold">
-                      REROUTE via {rOpt.viaName}{' '}
-                      {rOpt.fewestDelays && <span className="text-amber-800">· fewest delays</span>}{' '}
-                      {chosenKind === 'reroute' && <span className="text-blue-700">· Selected ✓</span>}
-                      {options.fastest === 'reroute' && <span className="text-green-700">· Fastest</span>}
+                      Reroute via {rOpt.viaName}
+                      {options.fastest === 'reroute' && <span className="text-green-700"> · Best ✓</span>}
+                      {chosenKind === 'reroute' && <span className="text-blue-700"> · Selected ✓</span>}
                     </span>
                     <br />
                     Arrive {rOpt.arrivalClock}
-                    {rOpt.diffMin !== undefined &&
-                      (rOpt.diffMin > 0.5
-                        ? ` (+${Math.round(rOpt.diffMin)} min detour)`
-                        : ' (no detour)')}
-                    {rOpt.fewestDelays && rOpt.reason && (
-                      <>
-                        <br />
-                        <span className="text-xs text-stone-600">{rOpt.reason}</span>
-                      </>
-                    )}
                   </button>
-                ) : (
-                  <p className="rounded-md bg-stone-100 p-2 text-sm">
-                    Reroute: {rOpt?.reason ?? 'unavailable'}
-                  </p>
                 )}
-                {options.switchNote && (
-                  <p className="text-xs text-stone-600">{options.switchNote}</p>
-                )}
+                <button
+                  type="button"
+                  onClick={chooseStay}
+                  className={`min-h-[44px] rounded-md border p-2 text-left text-sm ${options.fastest === 'stay' ? 'border-green-600 bg-green-50' : 'border-stone-300'} ${chosenKind && chosenKind !== 'stay' ? 'opacity-50' : ''}`}
+                >
+                  <span className="font-bold">
+                    Stay on {options.mainName}
+                    {options.fastest === 'stay' && <span className="text-green-700"> · Best ✓</span>}
+                    {chosenKind === 'stay' && <span className="text-blue-700"> · Selected ✓</span>}
+                  </span>
+                  <br />
+                  Arrive {options.stayArrival} ({options.stayLoClock}–{options.stayHiClock})
+                </button>
                 {options.stop && (
                   <button
                     type="button"
@@ -3503,13 +3634,115 @@ export default function SimPage() {
                     className={`min-h-[44px] rounded-md border p-2 text-left text-sm ${options.fastest === 'stop' ? 'border-green-600 bg-green-50' : 'border-stone-300'} ${chosenKind && chosenKind !== 'stop' ? 'opacity-50' : ''}`}
                   >
                     <span className="font-bold">
-                      STOP & WAIT at {options.stop.name}{' '}
-                      {chosenKind === 'stop' && <span className="text-blue-700">· Selected ✓</span>}
-                      {options.fastest === 'stop' && <span className="text-green-700">· Fastest</span>}
+                      Wait at {options.stop.name}
+                      {options.fastest === 'stop' && <span className="text-green-700"> · Best ✓</span>}
+                      {chosenKind === 'stop' && <span className="text-blue-700"> · Selected ✓</span>}
                     </span>
                     <br />
                     Wait {fmtMin(options.stop.waitMin * 60)} · arrive {options.stop.arrivalClock} ({options.stop.arrivalLoClock}–{options.stop.arrivalHiClock})
                   </button>
+                )}
+                {options.switchNote && (
+                  <p className="text-xs text-stone-600">{options.switchNote}</p>
+                )}
+              </div>
+            )}
+            <button
+              type="button"
+              onClick={() => setWhyOpen(!whyOpen)}
+              aria-expanded={whyOpen}
+              className="mt-2 min-h-[44px] w-full rounded-md border border-stone-300 px-3 text-sm font-semibold text-stone-700"
+            >
+              {whyOpen ? 'Why? ▾' : 'Why? ▸'}
+            </button>
+            {whyOpen && (
+              <div className="anim-fade">
+                {warned.thumbnail && (
+                  <div className="scan-wrap mt-2 rounded">
+                    <img
+                      src={warned.thumbnail}
+                      alt="Incident evidence"
+                      className="max-h-32 w-full rounded object-cover"
+                    />
+                    {checking > 0 && <div aria-hidden="true" className="anim-scan" />}
+                  </div>
+                )}
+                {warnLow !== null && warnHigh !== null && (
+                  <>
+                    <div aria-hidden="true" className="mt-2 h-2 w-full rounded-full bg-stone-200">
+                      <div
+                        className="anim-range relative h-2 rounded-full bg-amber-500"
+                        style={{
+                          left: `${Math.min(100, (warnLow / Math.max(60, warnHigh)) * 100)}%`,
+                          width: `${Math.max(2, Math.min(100, ((warnHigh - warnLow) / Math.max(60, warnHigh)) * 100))}%`,
+                        }}
+                      />
+                    </div>
+                    <p className="mt-1 text-xs text-stone-600">
+                      between {warnLow} and {warnHigh} min
+                      {(warnUnconfirmed || warnConf) && (
+                        <>
+                          {' '}·{' '}
+                          <span
+                            key={warnUnconfirmed ? 'unsure' : warnConf}
+                            className="anim-fade font-semibold"
+                          >
+                            {warnUnconfirmed ? 'not sure yet' : confidencePhrase(warnConf ?? 'low')}
+                          </span>
+                          {!warnUnconfirmed && warnLowReason ? `: ${warnLowReason}` : ''}
+                        </>
+                      )}
+                    </p>
+                  </>
+                )}
+                {warnUnconfirmed && (
+                  <p className="mt-1 text-sm text-amber-800">{warnUnconfirmed}</p>
+                )}
+                {warnReason && <p className="mt-1 text-xs text-stone-600">{warnReason}</p>}
+                {rOpt?.available && rOpt.decideLabel ? (
+                  <p className="mt-1 text-sm font-semibold">Decide by {rOpt.decideLabel}</p>
+                ) : (
+                  rOpt && !rOpt.available && rOpt.reason && (
+                    <p className="mt-1 text-sm font-semibold text-amber-800">{rOpt.reason}</p>
+                  )
+                )}
+                {rOpt?.fewestDelays && rOpt.reason && (
+                  <p className="mt-1 text-xs text-stone-600">{rOpt.reason}</p>
+                )}
+                {warnedEvidence.length > 0 && (
+                  <div className="mt-2 flex flex-wrap gap-1">
+                    {warnedEvidence.map((e, idx) => (
+                      <button
+                        key={idx}
+                        type="button"
+                        title={e.claim}
+                        aria-label={`Play Report ${reportNumber(e.reportId)} at ${fmtClock(e.second)}: ${e.claim}`}
+                        onClick={() => {
+                          const clip = warned.reports.find((r) => r.reportId === e.reportId)?.clip;
+                          if (!clip) return;
+                          setEvidencePlay({
+                            clip,
+                            second: e.second,
+                            label: `Report ${reportNumber(e.reportId)} · ${fmtClock(e.second)} · ${e.claim}`,
+                          });
+                        }}
+                        className="flex min-h-[44px] min-w-0 max-w-full items-center gap-1 rounded-full border border-stone-400 bg-white px-3 py-2 text-left text-xs font-semibold hover:border-blue-700 hover:bg-blue-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-700"
+                      >
+                        <span aria-hidden className="shrink-0 text-blue-700">▶</span>
+                        <span className="shrink-0">
+                          Report {reportNumber(e.reportId)} · {fmtClock(e.second)}
+                        </span>
+                        <span className="min-w-0 flex-1 truncate font-normal text-stone-600">
+                          {e.claim}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {warnSource && (
+                  <p className="mt-1 text-xs text-stone-500">
+                    {warnSource === 'muse-wonder' ? 'AI assessment · Muse Wonder' : 'Estimate · fallback table'}
+                  </p>
                 )}
               </div>
             )}
@@ -3540,14 +3773,163 @@ export default function SimPage() {
           </section>
         )}
 
-        <section className="flex flex-col gap-2">
+        <section className="flex flex-col gap-2" aria-label="Explore more">
           <button
             type="button"
-            onClick={() => setArming(!arming)}
-            className="min-h-[44px] rounded-md bg-stone-900 px-4 text-sm font-semibold text-white"
+            onClick={() => setExploreOpen(!exploreOpen)}
+            aria-expanded={exploreOpen}
+            className="min-h-[44px] rounded-md border border-stone-300 px-4 text-sm font-semibold text-stone-700"
           >
-            {arming ? 'Cancel drop' : 'Drop incident'}
+            {exploreOpen ? 'Explore more ▾' : 'Explore more ▸'}
           </button>
+          {exploreOpen && (
+            <div className="anim-fade flex flex-col gap-3">
+              <div className="flex flex-wrap gap-2" role="group" aria-label="Playback speed">
+                {SPEEDS.map((s) => (
+                  <button
+                    key={s}
+                    type="button"
+                    onClick={() => setSpeed(s)}
+                    aria-pressed={speed === s}
+                    className={`min-h-[44px] rounded-md border px-4 text-sm font-semibold ${speed === s ? 'border-blue-700 bg-blue-50 text-blue-700' : 'border-stone-300'}`}
+                  >
+                    {s}x
+                  </button>
+                ))}
+              </div>
+              <button
+                type="button"
+                onClick={() => setArming(!arming)}
+                className="min-h-[44px] rounded-md bg-stone-900 px-4 text-sm font-semibold text-white"
+              >
+                {arming ? 'Cancel drop' : 'Drop incident'}
+              </button>
+              <div className="rounded-lg border border-stone-200 bg-white p-3">
+                <label className="flex min-h-[44px] cursor-pointer items-center gap-2 text-sm text-stone-700">
+                  <input
+                    type="checkbox"
+                    checked={showLive}
+                    onChange={(e) => {
+                      const on = e.target.checked;
+                      setShowLive(on);
+                      if (!on) purgeCommunityIncidents();
+                    }}
+                    className="h-5 w-5"
+                  />
+                  Show live community reports
+                </label>
+                <p className="text-xs text-stone-500">
+                  Community reports are AI-checked uploads from visitors; they expire after 2 hours.
+                </p>
+              </div>
+              <section aria-label="Sentinel activity" className="rounded-lg border border-stone-200 bg-white p-3">
+                <h2 className="text-sm font-semibold">Sentinel activity</h2>
+                <p className="text-sm tabular-nums text-stone-700">
+                  {ladder.checks.toLocaleString()} checks · {ladder.escalated} escalated ·{' '}
+                  {incidents.reduce((a, i) => a + i.assessments.length, 0)} map updates · $
+                  {estimateLadderCost(
+                    { quicklooks: ladder.checks, escalated: ladder.escalated },
+                    {
+                      quicklook: LADDER_COSTS.quicklook,
+                      fullCheck: LADDER_COSTS.detect + LADDER_COSTS.verdict + LADDER_COSTS.assess,
+                    },
+                  ).toFixed(2)}
+                </p>
+                <p className="text-xs text-stone-500">
+                  Camera cars replay a cached quick look ~1/min; the map changes only on real events.
+                </p>
+              </section>
+              {netOn && (
+                <section aria-label="Network details" className="rounded-lg border border-emerald-300 bg-emerald-50 p-3">
+                  <h2 className="text-sm font-semibold">Network details</h2>
+                  {netThanks && (
+                    <>
+                      <p className="mt-1 text-sm tabular-nums text-stone-800">
+                        Reached {netCountsState.notified} drivers ·{' '}
+                        {netCountsState.rerouted} rerouted · {netCountsState.stayed} stayed ·{' '}
+                        {netCountsState.waiting} stopping to wait
+                      </p>
+                      <p className="text-sm text-stone-600">
+                        {netCountsState.unaffected} drivers not alerted (already past, other direction,
+                        or arriving after it clears)
+                      </p>
+                    </>
+                  )}
+                  <p className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-stone-600">
+                    <span><span className="mr-1 inline-block h-2 w-2 rounded-full bg-stone-400" />unaffected</span>
+                    <span><span className="mr-1 inline-block h-2 w-2 rounded-full bg-amber-500" />deciding</span>
+                    <span><span className="mr-1 inline-block h-2 w-2 rounded-full bg-blue-600" />rerouted</span>
+                    <span><span className="mr-1 inline-block h-2 w-2 rounded-full bg-red-600" />stayed</span>
+                    <span><span className="mr-1 inline-block h-2 w-2 rounded-full bg-purple-600" />waiting</span>
+                  </p>
+                  {netSelected !== null &&
+                    (() => {
+                      const d = netDriversRef.current.find((x) => x.id === netSelected);
+                      if (!d) return null;
+                      const inc = netIncidentNow();
+                      const opts = scoreDriver(d, inc ? [inc] : [], netLoadsRef.current);
+                      const state =
+                        d.status === 'alerted'
+                          ? 'Alerted — deciding…'
+                          : d.status === 'rerouted'
+                            ? `Rerouted onto ${d.routeNames[d.routeIdx]}`
+                            : d.status === 'stayed'
+                              ? 'Stayed in the jam'
+                              : d.status === 'waiting'
+                                ? 'Stopping to wait'
+                                : d.arrived
+                                  ? 'Arrived'
+                                  : 'Not alerted';
+                      return (
+                        <div className="mt-2 rounded-md border border-stone-200 bg-white p-2">
+                          <div className="flex items-start justify-between gap-2">
+                            <p className="text-sm font-semibold">{d.tripLabel}</p>
+                            <button
+                              type="button"
+                              aria-label="Close driver card"
+                              onClick={() => {
+                                netSelectedRef.current = null;
+                                setNetSelected(null);
+                              }}
+                              className="min-h-[44px] min-w-[44px] rounded-md border border-stone-300 px-2 text-sm font-semibold"
+                            >
+                              ✕
+                            </button>
+                          </div>
+                          <p className="text-sm text-stone-700">{state}</p>
+                          {d.choice !== null && (
+                            <p className="text-sm text-stone-600">
+                              Chose {d.choice}
+                              {d.savedMin > 0.5 ? ` · saves about ${Math.round(d.savedMin)} min vs staying` : ''}.
+                            </p>
+                          )}
+                          {d.notifiedAt !== null && (
+                            <ul className="mt-1 space-y-1 text-sm tabular-nums text-stone-700">
+                              <li>
+                                Stay {Math.round(opts.stayMin)} min{opts.best === 'stay' ? ' ✓' : ''}
+                              </li>
+                              {opts.rerouteMin !== null && opts.rerouteIdx !== null && (
+                                <li>
+                                  Reroute via {d.routeNames[opts.rerouteIdx]} {Math.round(opts.rerouteMin)} min
+                                  {opts.best === 'reroute' ? ' ✓' : ''}
+                                  {opts.fewestDelaysReason ? ` (${opts.fewestDelaysReason})` : ''}
+                                </li>
+                              )}
+                              {opts.stopMin !== null && opts.stopWaitMin !== null && (
+                                <li>
+                                  Stop &amp; wait {Math.round(opts.stopWaitMin)} min, arrive in{' '}
+                                  {Math.round(opts.stopMin)} min{opts.best === 'stop' ? ' ✓' : ''}
+                                </li>
+                              )}
+                            </ul>
+                          )}
+                        </div>
+                      );
+                    })()}
+                </section>
+              )}
+            </div>
+          )}
           {isDemo && !demoOn && (
             <button
               type="button"
@@ -3566,7 +3948,7 @@ export default function SimPage() {
             onClick={returnHome}
             className="min-h-[44px] rounded-md border border-stone-300 px-4 text-sm font-semibold"
           >
-            New trip
+            Plan trip
           </button>
         </section>
 
@@ -3604,8 +3986,12 @@ export default function SimPage() {
                     <p className="text-sm font-semibold">{i.summary}</p>
                     <p className="text-xs text-stone-600">
                       {i.source === 'community' ? 'Community report (demo) · ' : ''}
-                      {pretty(i.type)} · {pretty(i.stage)}
-                      {i.active ? '' : ' · cleared'} ·{' '}
+                      {typePhrase(i.type)}
+                      {(() => {
+                        const s = i.active ? stagePhrase(i.stage) : null;
+                        return s ? ` · ${s}` : '';
+                      })()}
+                      {i.active ? '' : ' · clear'} ·{' '}
                       {i.reportedByYou ? 'Reported by your camera' : `car #${i.reporterCar}`}
                     </p>
                   </div>
@@ -3620,11 +4006,11 @@ export default function SimPage() {
                     <p className="text-xs text-stone-600">
                       {remaining.unconfirmed
                         ? 'Range 0–10 min'
-                        : `Range ${remaining.lowMin}–${remaining.highMin} min · ${capFirst(latest.assessment.confidence)} confidence`}
+                        : `Range ${remaining.lowMin}–${remaining.highMin} min · ${confidencePhrase(latest.assessment.confidence)}`}
                     </p>
                     {latest.assessment.confidence === 'low' && (
                       <p className="text-xs font-semibold text-amber-800">
-                        Low confidence:{' '}
+                        Not sure yet:{' '}
                         {latest.assessment.uncertainties[0] ?? latest.assessment.rangeReason}
                       </p>
                     )}
@@ -3705,8 +4091,11 @@ export default function SimPage() {
                             ? 'Your clip'
                             : r.clip.startsWith(COMMUNITY_CLIP)
                               ? 'Community report'
-                              : r.clip}{' '}
-                          · {pretty(r.stage)}
+                              : 'Road camera'}
+                          {(() => {
+                            const s = stagePhrase(r.stage);
+                            return s ? ` · ${s}` : '';
+                          })()}
                           {r.direction === 'oncoming' ? ' · seen by an oncoming car' : ''}
                           {a &&
                             ` · ${a.assessment.changesSinceLast} · ${Math.round(a.assessment.clearance.lowMin)}–${Math.round(a.assessment.clearance.highMin)} min`}
@@ -3831,7 +4220,7 @@ export default function SimPage() {
                     ? 'Your clip'
                     : evidencePlay.clip.startsWith(COMMUNITY_CLIP)
                       ? 'Community report'
-                      : evidencePlay.clip}{' '}
+                      : 'Road camera'}{' '}
                   · {isStillClip(evidencePlay.clip) ? 'still near' : 'from'} {fmtClock(evidencePlay.second)}
                 </p>
               </div>

@@ -25,3 +25,129 @@ body {
     text-wrap: balance;
   }
 }
+
+/* ---- Step 10 purposeful animations: 200–400 ms, ease-out, one-shots ---- */
+
+@keyframes ds-rise {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Alert card / caption entrance: slides up and fades in. */
+.anim-rise {
+  animation: ds-rise 300ms ease-out both;
+}
+
+@keyframes ds-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* Cross-fades (confidence label, caption text swaps). */
+.anim-fade {
+  animation: ds-fade 250ms ease-out both;
+}
+
+@keyframes ds-pop {
+  0% {
+    opacity: 0;
+    transform: scale(0.5);
+  }
+  60% {
+    opacity: 1;
+    transform: scale(1.15);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* Progress-step check marks tick in. */
+.anim-pop {
+  display: inline-block;
+  animation: ds-pop 250ms ease-out both;
+}
+
+@keyframes ds-scan {
+  from {
+    transform: translateX(-120%);
+  }
+  to {
+    transform: translateX(120%);
+  }
+}
+
+/* Thin scan line sweeping a photo while a check runs. The wrapper clips
+   it; remove .anim-scan when the check finishes. */
+.scan-wrap {
+  position: relative;
+  overflow: hidden;
+}
+
+.anim-scan {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  pointer-events: none;
+  background: linear-gradient(
+    to right,
+    transparent 42%,
+    rgba(26, 115, 232, 0.55) 50%,
+    transparent 58%
+  );
+  animation: ds-scan 1.1s linear infinite;
+}
+
+/* Clearance range bar: width/position ease when the range narrows. */
+.anim-range {
+  transition:
+    left 400ms ease-out,
+    width 400ms ease-out;
+}
+
+/* Landing how-it-works reveal: fade and rise once on scroll. JS adds .on
+   with a per-step transition-delay. */
+.reveal {
+  opacity: 0;
+  transform: translateY(14px);
+  transition:
+    opacity 400ms ease-out,
+    transform 400ms ease-out;
+}
+
+.reveal.on {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .anim-rise,
+  .anim-fade,
+  .anim-pop,
+  .anim-scan,
+  .anim-range,
+  .reveal {
+    animation: none !important;
+    transition: none !important;
+  }
+  .reveal {
+    opacity: 1;
+    transform: none;
+  }
+  .anim-scan {
+    display: none;
+  }
+}

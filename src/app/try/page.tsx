@@ -6,6 +6,7 @@ import { upload } from '@vercel/blob/client';
 
 import { displayClearance, type AgentAssessment } from '@/lib/agent-guard';
 import type { VerdictCheck } from '@/lib/checks';
+import { confidencePhrase, stagePhrase, typePhrase } from '@/lib/present';
 import type { Verdict } from '@/lib/verdict';
 
 const MAX_SECONDS = 30;
@@ -685,6 +686,8 @@ export default function TryPage() {
   const [fullStarted, setFullStarted] = useState(false);
   const [postOpen, setPostOpen] = useState<'incident' | 'clear' | null>(null);
   const [postDone, setPostDone] = useState<string | null>(null);
+  // Step 10: result details collapse behind "Show details" once finished.
+  const [detailsOpen, setDetailsOpen] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const setStep = (k: StepKey, v: StepStatus) => setSteps((s) => ({ ...s, [k]: v }));
@@ -897,6 +900,7 @@ export default function TryPage() {
     setFullStarted(false);
     setPostOpen(null);
     setPostDone(null);
+    setDetailsOpen(false);
   }
 
   async function discardAndReset() {
@@ -944,6 +948,59 @@ export default function TryPage() {
   const canRun = file && duration !== null && stills.length === 4 && !running && !finished && !tryId;
   const totalMs = Object.values(timings).reduce((a, b) => a + (b ?? 0), 0);
   const fmtCost = (usd: number): string => (usd < 0.01 ? `$${usd.toFixed(4)}` : `$${usd.toFixed(2)}`);
+  // A check is running while an analysis step is busy: scan the still.
+  const scanning =
+    steps.quicklook === 'busy' ||
+    steps.detect === 'busy' ||
+    steps.verdict === 'busy' ||
+    steps.assess === 'busy';
+
+  // Step 10: one result headline; details open live, then collapse.
+  useEffect(() => {
+    if (running) {
+      setDetailsOpen(true);
+    } else if (finished || (quicklook && quicklook.flag === 'clear' && !fullStarted)) {
+      setDetailsOpen(false);
+    }
+  }, [running, finished, quicklook, fullStarted]);
+  type HeadlineKind = 'clear' | 'notroad' | 'normal' | 'incident' | null;
+  let headlineKind: HeadlineKind = null;
+  if (quicklook && quicklook.flag === 'clear' && !fullStarted) headlineKind = 'clear';
+  else if (verdict && !roadScene) headlineKind = 'notroad';
+  else if (verdict && roadScene && verdict.incident) headlineKind = 'incident';
+  else if (verdict && roadScene && !verdict.incident && finished) headlineKind = 'normal';
+  const incidentHeadline =
+    headlineKind === 'incident' && verdict
+      ? (() => {
+          const names = (
+            [
+              ['police', 'police'],
+              ['ambulance', 'ambulance'],
+              ['fire', 'fire crew'],
+              ['towTruck', 'tow truck'],
+            ] as const
+          )
+            .filter(([key]) => verdict.responders[key])
+            .map(([, name]) => name);
+          const tail =
+            names.length > 0
+              ? ` · ${names.join(', ')} on scene`
+              : (() => {
+                  const s = stagePhrase(verdict.stage);
+                  return s ? ` · ${s}` : '';
+                })();
+          return `${typePhrase(verdict.type)} detected${tail}`;
+        })()
+      : '';
+  const hasDetails =
+    detect !== null ||
+    verdict !== null ||
+    stored !== null ||
+    finished ||
+    quicklook !== null;
+  // Scan thumb while a check runs (the user's own still, shown back to them).
+  // eslint-disable-next-line @next/next/no-img-element
+  const scanImg = (src: string) => <img src={src} alt="" aria-hidden="true" className="h-auto w-full rounded" />;
 
   return (
     <main className="mx-auto flex min-h-dvh w-full max-w-3xl flex-col gap-6 px-4 py-8">
@@ -1014,10 +1071,20 @@ export default function TryPage() {
       {(tryId || running || finished) && (
         <section aria-label="Progress" className="rounded-lg border border-stone-200 bg-white p-4">
           <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-stone-500">Progress</h2>
+          {scanning && stills[1] && (
+            <div className="scan-wrap mb-2 max-w-[220px] rounded">
+              {scanImg(stills[1].jpeg)}
+              <div aria-hidden="true" className="anim-scan" />
+            </div>
+          )}
           <ol className="flex flex-col gap-1">
             {(Object.keys(STEP_LABELS) as StepKey[]).map((k) => (
               <li key={k} className="flex items-center gap-2 text-sm">
-                <span aria-hidden="true">
+                <span
+                  aria-hidden="true"
+                  key={steps[k]}
+                  className={steps[k] === 'done' || steps[k] === 'error' ? 'anim-pop' : undefined}
+                >
                   {steps[k] === 'done' ? '✓' : steps[k] === 'busy' ? '…' : steps[k] === 'error' ? '✕' : '○'}
                 </span>
                 <span className={steps[k] === 'error' ? 'font-semibold text-red-700' : 'text-stone-700'}>
@@ -1046,36 +1113,73 @@ export default function TryPage() {
         </section>
       )}
 
-      {quicklook && quicklook.flag === 'clear' && !fullStarted && (
-        <section aria-label="Quick look result" className="rounded-lg border border-stone-200 bg-white p-4">
-          <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-stone-500">Quick look</h2>
-          <p className="text-lg font-bold text-stone-900">
-            Road looks normal; nothing would be posted to the map.
-          </p>
-          <p className="mt-1 text-sm text-stone-600">
-            Cost {cost !== null ? fmtCost(cost) : '…'}
-            {timings.quicklook !== undefined && ` · Quick look ${(timings.quicklook / 1000).toFixed(1)} s`}
-          </p>
-          <button
-            type="button"
-            onClick={runFullAnyway}
-            disabled={running}
-            className="mt-3 min-h-[44px] w-full rounded-md border border-blue-700 px-4 py-2 text-sm font-semibold text-blue-700 disabled:opacity-40 sm:w-auto"
-          >
-            {running ? 'Analyzing…' : 'Run full analysis anyway'}
-          </button>
-          <p className="mt-1 text-xs text-stone-500">Uses the same try and budget.</p>
-          {!postDone && (
-            <button
-              type="button"
-              onClick={() => setPostOpen('clear')}
-              disabled={running}
-              className="mt-2 min-h-[44px] w-full rounded-md border border-emerald-700 px-4 py-2 text-sm font-semibold text-emerald-700 disabled:opacity-40 sm:w-auto"
-            >
-              Post all-clear to the live map
-            </button>
+      {headlineKind && (
+        <section aria-label="Result" className="rounded-lg border border-stone-200 bg-white p-4">
+          {headlineKind === 'clear' && (
+            <>
+              <p className="anim-rise text-lg font-bold text-stone-900">
+                Road looks normal, nothing posted
+              </p>
+              <button
+                type="button"
+                onClick={runFullAnyway}
+                disabled={running}
+                className="mt-3 min-h-[44px] w-full rounded-md border border-blue-700 px-4 py-2 text-sm font-semibold text-blue-700 disabled:opacity-40 sm:w-auto"
+              >
+                {running ? 'Analyzing…' : 'Run full analysis anyway'}
+              </button>
+              <p className="mt-1 text-xs text-stone-500">Uses the same try and budget.</p>
+              {!postDone && (
+                <button
+                  type="button"
+                  onClick={() => setPostOpen('clear')}
+                  disabled={running}
+                  className="mt-2 min-h-[44px] w-full rounded-md border border-emerald-700 px-4 py-2 text-sm font-semibold text-emerald-700 disabled:opacity-40 sm:w-auto"
+                >
+                  Post all-clear to the live map
+                </button>
+              )}
+            </>
           )}
-          {postDone && (
+          {headlineKind === 'notroad' && (
+            <p className="anim-rise text-lg font-bold text-stone-900">
+              This doesn&apos;t look like road footage.
+            </p>
+          )}
+          {headlineKind === 'normal' && (
+            <p className="anim-rise text-lg font-bold text-stone-900">
+              Road looks normal, nothing posted
+            </p>
+          )}
+          {headlineKind === 'incident' && (
+            <>
+              <p className="anim-rise text-lg font-bold text-stone-900">{incidentHeadline}</p>
+              {stored && cleared && (
+                <p className="mt-1 text-sm font-semibold text-stone-800">
+                  clears in about {cleared.likelyMin} min
+                </p>
+              )}
+              {stored && finished && cost !== null && !postDone && (
+                <button
+                  type="button"
+                  onClick={() => setPostOpen('incident')}
+                  className="mt-3 min-h-[44px] w-full rounded-md bg-emerald-700 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-800 sm:w-auto"
+                >
+                  Post to the live map
+                </button>
+              )}
+              {finished && cost !== null && (
+                <button
+                  type="button"
+                  onClick={addToSim}
+                  className="mt-2 min-h-[44px] w-full rounded-md bg-blue-700 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-800 sm:w-auto"
+                >
+                  Add to the I-95 simulation
+                </button>
+              )}
+            </>
+          )}
+          {postDone && (headlineKind === 'clear' || headlineKind === 'incident') && (
             <p role="status" className="mt-2 text-sm font-semibold text-emerald-800">
               {postDone}
             </p>
@@ -1083,6 +1187,18 @@ export default function TryPage() {
         </section>
       )}
 
+      {hasDetails && (
+        <section aria-label="Details" className="flex flex-col gap-6">
+          <button
+            type="button"
+            onClick={() => setDetailsOpen(!detailsOpen)}
+            aria-expanded={detailsOpen}
+            className="min-h-[44px] rounded-md border border-stone-300 px-4 py-2 text-sm font-semibold text-stone-700 hover:bg-stone-100"
+          >
+            {detailsOpen ? 'Hide details ▾' : 'Show details ▸'}
+          </button>
+          {detailsOpen && (
+            <div className="anim-fade flex flex-col gap-6">
       {detect && (
         <section aria-label="Stills" className="flex flex-col gap-3">
           <h2 className="text-sm font-semibold uppercase tracking-wide text-stone-500">
@@ -1149,8 +1265,12 @@ export default function TryPage() {
             <div className="flex flex-col gap-2">
               <p className="text-stone-800">{verdict.summary}</p>
               <p className="text-sm text-stone-600">
-                {verdict.incident ? `Type: ${verdict.type} · ` : 'No incident · '}
-                Severity: {verdict.severity} · Stage: {verdict.stage}
+                {verdict.incident ? `${typePhrase(verdict.type)} · ` : 'No incident · '}
+                Severity: {verdict.severity}
+                {(() => {
+                  const s = stagePhrase(verdict.stage);
+                  return s ? ` · ${s}` : '';
+                })()}
               </p>
               <p className="text-sm text-stone-600">
                 Responders:{' '}
@@ -1198,7 +1318,8 @@ export default function TryPage() {
             Clears in about {cleared.likelyMin} min
           </p>
           <p className="text-sm text-stone-600">
-            Range {cleared.lowMin}–{cleared.highMin} min · {stored.assessment.confidence} confidence
+            Range {cleared.lowMin}–{cleared.highMin} min ·{' '}
+            {confidencePhrase(stored.assessment.confidence)}
           </p>
           <p className="mt-1 text-sm text-stone-700">{stored.assessment.rangeReason}</p>
           <p className="text-sm text-stone-600">Narrows if: {stored.assessment.narrowsIf}</p>
@@ -1206,33 +1327,20 @@ export default function TryPage() {
         </section>
       )}
 
-      {finished && cost !== null && (
+      {cost !== null && (finished || (quicklook && quicklook.flag === 'clear' && !fullStarted)) && (
         <section aria-label="Cost" className="rounded-lg border border-stone-200 bg-white p-4">
           <p className="text-sm font-semibold text-stone-800">
-            This analysis cost {fmtCost(cost)}. The clip has been deleted.
+            This analysis cost {fmtCost(cost)}.{finished ? ' The clip has been deleted.' : ''}
           </p>
-          {roadScene && verdict?.incident && (
-            <button
-              type="button"
-              onClick={addToSim}
-              className="mt-3 min-h-[44px] w-full rounded-md bg-blue-700 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-800 sm:w-auto"
-            >
-              Add to the I-95 simulation
-            </button>
-          )}
-          {roadScene && verdict?.incident && stored && !postDone && (
-            <button
-              type="button"
-              onClick={() => setPostOpen('incident')}
-              className="mt-2 min-h-[44px] w-full rounded-md bg-emerald-700 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-800 sm:w-auto"
-            >
-              Post to the live map
-            </button>
-          )}
-          {postDone && (
-            <p role="status" className="mt-2 text-sm font-semibold text-emerald-800">
-              {postDone}
+          {timings.quicklook !== undefined && (
+            <p className="mt-1 text-sm text-stone-600">
+              Quick look {(timings.quicklook / 1000).toFixed(1)} s
+              {totalMs > 0 && ` · total step time ${(totalMs / 1000).toFixed(1)} s`}
             </p>
+          )}
+        </section>
+      )}
+            </div>
           )}
         </section>
       )}
