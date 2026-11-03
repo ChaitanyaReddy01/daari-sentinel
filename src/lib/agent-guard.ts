@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 import type { VerdictCheck } from './checks';
-import { planningDefault, type PlanningDefault } from './clearance';
+import { clearanceEstimate, planningDefault, type PlanningDefault } from './clearance';
 import type { Verdict } from './verdict';
 
 /**
@@ -420,11 +420,66 @@ export function buildFallbackAssessment(args: {
   return { assessment: candidate, notes };
 }
 
-/** Remaining clearance after minutesSinceAssessment, floored at 0. */
+/** Warn each distinct corruption once per session (render + scoring are hot). */
+const warnedOnce = new Set<string>();
+
+function warnOnce(key: string, message: string): void {
+  if (warnedOnce.has(key)) return;
+  warnedOnce.add(key);
+  console.warn(`[clearance] ${message}`);
+}
+
+function asFinite(n: unknown): number | null {
+  return typeof n === 'number' && Number.isFinite(n) ? n : null;
+}
+
+export interface SafeClearance {
+  lowMin: number;
+  likelyMin: number;
+  highMin: number;
+  /** True when any end was missing/non-finite and filled from fallback. */
+  fixed: boolean;
+}
+
+/**
+ * Guarantee finite clearance ends for scoring and display. A missing or
+ * non-finite low/high falls back to the planning defaults for the
+ * type+stage; a missing likelyMin derives from the midpoint of the known
+ * ends. The result is ordered low<=likely<=high. Repairs are warned once.
+ */
+export function safeClearance(
+  clearance: { lowMin?: unknown; likelyMin?: unknown; highMin?: unknown } | null | undefined,
+  fallback: PlanningDefault,
+  tag: string,
+): SafeClearance {
+  const lowIn = asFinite(clearance?.lowMin);
+  const likelyIn = asFinite(clearance?.likelyMin);
+  const highIn = asFinite(clearance?.highMin);
+  const low = lowIn ?? fallback.lowMin;
+  const high = highIn ?? fallback.highMin;
+  const likely = likelyIn ?? Math.round((low + high) / 2);
+  const ordered = low <= likely && likely <= high;
+  const fixed = lowIn === null || likelyIn === null || highIn === null || !ordered;
+  if (fixed) {
+    warnOnce(
+      `${tag}:${JSON.stringify(clearance)}`,
+      `${tag}: incomplete clearance ${JSON.stringify(clearance)}; using low=${low} likely=${likely} high=${high}.`,
+    );
+  }
+  return {
+    lowMin: Math.min(low, likely, high),
+    likelyMin: Math.min(Math.max(likely, low), high),
+    highMin: Math.max(low, likely, high),
+    fixed,
+  };
+}
+
+/** Remaining clearance after minutesSinceAssessment, floored at 0. Never NaN. */
 export function displayClearance(
   assessment: AgentAssessment,
   minutesSinceAssessment: number,
   hasClearedReport: boolean,
+  planning?: PlanningDefault,
 ): {
   lowMin: number;
   likelyMin: number;
@@ -432,8 +487,16 @@ export function displayClearance(
   unconfirmed: boolean;
   unconfirmedLabel: string | null;
 } {
-  const elapsed = Math.max(0, minutesSinceAssessment);
-  if (!hasClearedReport && elapsed > assessment.clearance.highMin) {
+  const elapsed = asFinite(minutesSinceAssessment) ?? 0;
+  if (asFinite(minutesSinceAssessment) === null) {
+    warnOnce('age', `non-finite assessment age (${String(minutesSinceAssessment)}); treating as 0.`);
+  }
+  const c = safeClearance(
+    assessment.clearance,
+    planning ?? { lowMin: 0, likelyMin: 0, highMin: 0 },
+    'display',
+  );
+  if (!hasClearedReport && elapsed > c.highMin) {
     return {
       lowMin: 0,
       likelyMin: 5,
@@ -443,10 +506,47 @@ export function displayClearance(
     };
   }
   return {
-    lowMin: Math.max(0, Math.round(assessment.clearance.lowMin - elapsed)),
-    likelyMin: Math.max(0, Math.round(assessment.clearance.likelyMin - elapsed)),
-    highMin: Math.max(0, Math.round(assessment.clearance.highMin - elapsed)),
+    lowMin: Math.max(0, Math.round(c.lowMin - Math.max(0, elapsed))),
+    likelyMin: Math.max(0, Math.round(c.likelyMin - Math.max(0, elapsed))),
+    highMin: Math.max(0, Math.round(c.highMin - Math.max(0, elapsed))),
     unconfirmed: false,
     unconfirmedLabel: null,
   };
+}
+
+/** Minimal incident shape for range resolution (scoring + display share it). */
+export interface RangeIncident {
+  assessments: { assessment: AgentAssessment; atT: number }[];
+  reports: { t: number; incident: boolean }[];
+  type: string;
+  stage: string;
+  severity: string | null;
+}
+
+/**
+ * An incident's clearance range remaining now: the latest assessment aged
+ * to simNow, else the planning table (work zones read as zero). Never NaN:
+ * a non-finite assessment age counts as 0 and incomplete ends fall back to
+ * the planning defaults for the incident's type and stage.
+ */
+export function resolveIncidentRange(
+  inc: RangeIncident,
+  simNow: number,
+): { lo: number; likely: number; hi: number } {
+  const latest = inc.assessments[inc.assessments.length - 1] ?? null;
+  if (latest) {
+    const atT = asFinite(latest.atT) ?? simNow;
+    const rem = displayClearance(
+      latest.assessment,
+      (simNow - atT) / 60,
+      inc.reports.some((r) => !r.incident),
+      planningDefault(inc.type, inc.stage, inc.severity),
+    );
+    return { lo: rem.lowMin, likely: rem.likelyMin, hi: rem.highMin };
+  }
+  const clear = clearanceEstimate(inc.type, inc.stage, inc.severity);
+  if (clear.loMin === null || clear.likelyMin === null || clear.hiMin === null) {
+    return { lo: 0, likely: 0, hi: 0 };
+  }
+  return { lo: clear.loMin, likely: clear.likelyMin, hi: clear.hiMin };
 }

@@ -240,19 +240,43 @@ export const DEMO_EVENTS: DemoEvent[] = [
   { atMin: 40, kind: 'followup', clip: 'dash-cam-car-1', from: 'oncoming' },
 ];
 
-/** "t+MM:SS" for the sim clock. */
+/** "t+MM:SS" for the sim clock. Never renders NaN. */
 export function formatElapsed(simSeconds: number): string {
+  if (!Number.isFinite(simSeconds)) return '–';
   const m = Math.floor(simSeconds / 60);
   const s = Math.floor(simSeconds % 60);
   return `t+${m}:${String(s).padStart(2, '0')}`;
 }
 
-/** Wall-clock ETA from sim start + elapsed + remaining. */
+/** Wall-clock ETA from sim start + elapsed + remaining. Never renders NaN. */
 export function formatEta(simElapsedSeconds: number, remainingSeconds: number): string {
+  if (!Number.isFinite(simElapsedSeconds) || !Number.isFinite(remainingSeconds)) return '–';
   const totalMin = SIM_START_MINUTES + Math.round((simElapsedSeconds + remainingSeconds) / 60);
   const h24 = Math.floor(totalMin / 60) % 24;
   const m = totalMin % 60;
   const suffix = h24 < 12 ? 'AM' : 'PM';
   const h12 = h24 % 12 === 0 ? 12 : h24 % 12;
   return `${h12}:${String(m).padStart(2, '0')} ${suffix}`;
+}
+
+/** Whole minutes, never NaN. */
+export function fmtInt(n: number): string {
+  return Number.isFinite(n) ? String(Math.round(n)) : '–';
+}
+
+/** "7.0 mi", never NaN. */
+export function fmtMi(meters: number): string {
+  return Number.isFinite(meters) ? `${(meters / METERS_PER_MILE).toFixed(1)} mi` : '–';
+}
+
+/** "5 min", never NaN. */
+export function fmtMin(seconds: number): string {
+  return Number.isFinite(seconds) ? `${Math.max(0, Math.round(seconds / 60))} min` : '–';
+}
+
+/** "M:SS" countdown, never NaN. */
+export function fmtClock(second: number): string {
+  if (!Number.isFinite(second)) return '–';
+  const s = Math.max(0, Math.floor(second));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 }

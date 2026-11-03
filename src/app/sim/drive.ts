@@ -1,6 +1,7 @@
 import {
   MPH_TO_MPS,
   haversineMeters,
+  nearestOnRoute,
   pointAt,
   speedInZones,
   type LatLng,
@@ -331,6 +332,116 @@ export function routesRemainSec(totalDurationSec: number, totalLengthM: number, 
   if (totalLengthM <= 0 || totalDurationSec <= 0) return 0;
   const frac = Math.min(1, Math.max(0, s / totalLengthM));
   return Math.max(0, totalDurationSec * (1 - frac));
+}
+
+/* ---- Multi-incident route scoring (seconds, pure) ---- */
+
+export interface RouteScore {
+  drive: number;
+  lo: number;
+  mid: number;
+  hi: number;
+  total: number;
+  totalLo: number;
+  totalHi: number;
+}
+
+/** An incident with its clearance range already resolved (see resolveIncidentRange). */
+export interface ScoredIncident {
+  lat: number;
+  lng: number;
+  lanesBlocked: string | null;
+  firstReportT: number;
+  range: { lo: number; likely: number; hi: number };
+}
+
+/**
+ * Score a route from fromS: free-flow drive time plus per-incident delays
+ * in reach order, each evaluated at its arrival time after earlier delays.
+ * startOffsetSec shifts arrivals when scoring a leg reached later (e.g. a
+ * reroute's remainder after the drive to the divergence point).
+ * An incident whose delay is non-finite is skipped with a warning: one bad
+ * input must never poison the totals.
+ */
+export function scoreRouteWithIncidents(args: {
+  geom: RouteGeom;
+  speeds: StepSpeed[];
+  fromS: number;
+  simNow: number;
+  startOffsetSec: number;
+  baseMps: number;
+  lateralMeters: number;
+  incidents: ScoredIncident[];
+}): RouteScore {
+  const { geom, speeds, fromS, simNow, startOffsetSec, baseMps, lateralMeters, incidents } = args;
+  const drive = remainingWithSpeeds(fromS, speeds, baseMps, geom.length);
+  const onRoute = incidents
+    .map((inc) => ({ inc, s: nearestOnRoute(geom, { lat: inc.lat, lng: inc.lng }).s }))
+    .filter(
+      (o) =>
+        o.s > fromS + 50 &&
+        minDistanceToRoute(geom, { lat: o.inc.lat, lng: o.inc.lng }) <= lateralMeters,
+    )
+    .sort((a, b) => a.s - b.s);
+  let acc = 0;
+  let lo = 0;
+  let mid = 0;
+  let hi = 0;
+  for (const { inc, s } of onRoute) {
+    const freeTo = projectToSWithSpeeds(fromS, s, [], speeds, baseMps);
+    const arrivalMin = (startOffsetSec + freeTo + acc) / 60;
+    const ageMin = Math.max(0, (simNow - inc.firstReportT) / 60 + arrivalMin);
+    const r = stayDelayRange(
+      arrivalMin,
+      inc.range.lo,
+      inc.range.likely,
+      inc.range.hi,
+      inc.lanesBlocked ?? 'unknown',
+      ageMin,
+    );
+    if (!Number.isFinite(r.lo) || !Number.isFinite(r.mid) || !Number.isFinite(r.hi)) {
+      console.warn('[scoring] non-finite delay skipped (range or arrival was not finite).');
+      continue;
+    }
+    lo += r.lo * 60;
+    mid += r.mid * 60;
+    hi += r.hi * 60;
+    acc += r.mid * 60;
+  }
+  return { drive, lo, mid, hi, total: drive + mid, totalLo: drive + lo, totalHi: drive + hi };
+}
+
+/**
+ * Pick the fastest option, ignoring non-finite scores: a NaN total can
+ * never win (NaN comparisons are always false, which used to leave a
+ * wrong Best on STAY). Ties keep the earlier option (stay, reroute, stop).
+ */
+export function pickFastest(
+  stayTotalSec: number,
+  reroute: { totalSec: number; suggest: boolean } | null,
+  stopArrivalSec: number | null,
+): 'stay' | 'reroute' | 'stop' {
+  let best: { kind: 'stay' | 'reroute' | 'stop'; sec: number } | null = Number.isFinite(
+    stayTotalSec,
+  )
+    ? { kind: 'stay', sec: stayTotalSec }
+    : null;
+  if (
+    reroute !== null &&
+    reroute.suggest &&
+    Number.isFinite(reroute.totalSec) &&
+    (best === null || reroute.totalSec < best.sec)
+  ) {
+    best = { kind: 'reroute', sec: reroute.totalSec };
+  }
+  if (
+    stopArrivalSec !== null &&
+    Number.isFinite(stopArrivalSec) &&
+    (best === null || stopArrivalSec < best.sec)
+  ) {
+    best = { kind: 'stop', sec: stopArrivalSec };
+  }
+  return best?.kind ?? 'stay';
 }
 
 /* ---- Step 5: per-step drive speeds (ETA match) ---- */

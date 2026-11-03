@@ -137,7 +137,11 @@ export function agentCachePath(key: string): string {
   return path.join(AGENT_DIR, `${key}.json`);
 }
 
-/** Cached assessment (data/cache/, then the snapshot); version mismatch is a miss. */
+/**
+ * Cached assessment (data/cache/, then the snapshot). A version mismatch
+ * or an assessment that fails the current schema (e.g. older entries
+ * without likelyMin) is a miss, never served raw.
+ */
 export function readAgentCache(key: string): StoredAssessment | null {
   let parsed: StoredAssessment | null = null;
   try {
@@ -147,7 +151,14 @@ export function readAgentCache(key: string): StoredAssessment | null {
     parsed = readSnapshotJson<StoredAssessment>(path.join('agent', `${key}.json`));
   }
   if (!parsed || parsed.agentVersion !== AGENT_VERSION || !parsed.assessment) return null;
-  return parsed;
+  const checked = AgentAssessmentSchema.safeParse(parsed.assessment);
+  if (!checked.success) {
+    console.warn(
+      `[agent] cached ${key.slice(0, 12)}… failed schema v${AGENT_VERSION}; treating as a miss.`,
+    );
+    return null;
+  }
+  return { ...parsed, assessment: checked.data };
 }
 
 /** Day or night from the clip verdict (night wording means night). */

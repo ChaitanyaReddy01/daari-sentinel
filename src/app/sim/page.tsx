@@ -6,7 +6,11 @@
 
 import { useEffect, useRef, useState } from 'react';
 
-import { displayClearance, type AgentAssessment } from '@/lib/agent-guard';
+import {
+  displayClearance,
+  resolveIncidentRange,
+  type AgentAssessment,
+} from '@/lib/agent-guard';
 import { clipThumbUrl, clipVideoUrl } from '@/lib/clip-urls';
 import { estimateLadderCost } from '@/lib/triage';
 import ladderData from '../../../data/snapshot/triage-ladder.json';
@@ -48,6 +52,10 @@ import {
   buildRouteGeom,
   createCars,
   decodePolyline,
+  fmtClock,
+  fmtInt,
+  fmtMi,
+  fmtMin,
   formatElapsed,
   formatEta,
   haversineMeters,
@@ -65,15 +73,17 @@ import {
   decideByLabel,
   findDivergence,
   minDistanceToRoute,
+  pickFastest,
   projectToSWithSpeeds,
   remainingWithSpeeds,
   rerouteDelayMin,
   routeName,
+  scoreRouteWithIncidents,
   speak,
   speedAtSpeeds,
-  stayDelayRange,
   stopWaitEstimate,
   subPath,
+  type RouteScore,
   type StepSpeed,
 } from './drive';
 
@@ -329,19 +339,6 @@ function fmtUSD(n: number): string {
   if (n === 0) return '$0';
   if (n < 0.01) return `$${n.toFixed(4)}`;
   return `$${n.toFixed(2)}`;
-}
-
-function fmtMi(meters: number): string {
-  return `${(meters / METERS_PER_MILE).toFixed(1)} mi`;
-}
-
-function fmtMin(seconds: number): string {
-  return `${Math.max(0, Math.round(seconds / 60))} min`;
-}
-
-function fmtClock(second: number): string {
-  const s = Math.max(0, Math.floor(second));
-  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 }
 
 function reportNumber(reportId: string): string {
@@ -1608,85 +1605,39 @@ export default function SimPage() {
     });
   };
 
-  // ---- multi-incident route scoring (seconds) ----
-  interface RouteScore {
-    drive: number;
-    lo: number;
-    mid: number;
-    hi: number;
-    total: number;
-    totalLo: number;
-    totalHi: number;
-  }
-
+  // ---- multi-incident route scoring (seconds; pure math lives in drive.ts) ----
   /** An incident's clearance range remaining now, else the planning table. */
   const incidentRangeAt = (
     inc: SimIncident,
     simNow: number,
-  ): { lo: number; likely: number; hi: number } => {
-    const latest = inc.assessments[inc.assessments.length - 1] ?? null;
-    if (latest) {
-      const rem = displayClearance(
-        latest.assessment,
-        (simNow - latest.atT) / 60,
-        inc.reports.some((r) => !r.incident),
-      );
-      return { lo: rem.lowMin, likely: rem.likelyMin, hi: rem.highMin };
-    }
-    const clear = clearanceEstimate(inc.type, inc.stage, inc.severity);
-    if (clear.loMin === null || clear.likelyMin === null || clear.hiMin === null) {
-      return { lo: 0, likely: 0, hi: 0 };
-    }
-    return { lo: clear.loMin, likely: clear.likelyMin, hi: clear.hiMin };
-  };
+  ): { lo: number; likely: number; hi: number } => resolveIncidentRange(inc, simNow);
 
   /**
    * Score a route from fromS: free-flow drive time plus per-incident delays
-   * in reach order, each evaluated at its arrival time after earlier delays.
-   * startOffsetSec shifts arrivals when scoring a leg reached later (e.g. a
-   * reroute's remainder after the drive to the divergence point).
+   * in reach order. Pure scoring in drive.ts; this maps live incidents in.
    */
   const scoreRoute = (
     route: { geom: RouteGeom; speeds: StepSpeed[] },
     fromS: number,
     simNow: number,
     startOffsetSec = 0,
-  ): RouteScore => {
-    const base = YOUR_BASE_MPS;
-    const drive = remainingWithSpeeds(fromS, route.speeds, base, route.geom.length);
-    const onRoute = activeIncidents()
-      .map((inc) => ({ inc, s: incidentSOn(inc, route.geom) }))
-      .filter(
-        (o) =>
-          o.s > fromS + 50 &&
-          minDistanceToRoute(route.geom, { lat: o.inc.lat, lng: o.inc.lng }) <=
-            WARN_LATERAL_METERS,
-      )
-      .sort((a, b) => a.s - b.s);
-    let acc = 0;
-    let lo = 0;
-    let mid = 0;
-    let hi = 0;
-    for (const { inc, s } of onRoute) {
-      const freeTo = projectToSWithSpeeds(fromS, s, [], route.speeds, base);
-      const arrivalMin = (startOffsetSec + freeTo + acc) / 60;
-      const c = incidentRangeAt(inc, simNow);
-      const ageMin = Math.max(0, (simNow - inc.reports[0].t) / 60 + arrivalMin);
-      const r = stayDelayRange(
-        arrivalMin,
-        c.lo,
-        c.likely,
-        c.hi,
-        inc.lanesBlocked ?? 'unknown',
-        ageMin,
-      );
-      lo += r.lo * 60;
-      mid += r.mid * 60;
-      hi += r.hi * 60;
-      acc += r.mid * 60;
-    }
-    return { drive, lo, mid, hi, total: drive + mid, totalLo: drive + lo, totalHi: drive + hi };
-  };
+  ): RouteScore =>
+    scoreRouteWithIncidents({
+      geom: route.geom,
+      speeds: route.speeds,
+      fromS,
+      simNow,
+      startOffsetSec,
+      baseMps: YOUR_BASE_MPS,
+      lateralMeters: WARN_LATERAL_METERS,
+      incidents: activeIncidents().map((inc) => ({
+        lat: inc.lat,
+        lng: inc.lng,
+        lanesBlocked: inc.lanesBlocked ?? 'unknown',
+        firstReportT: inc.reports[0]?.t ?? simNow,
+        range: incidentRangeAt(inc, simNow),
+      })),
+    });
 
   // Sim loop: advance traffic on the sim clock, redraw the car canvas.
   useEffect(() => {
@@ -2244,7 +2195,7 @@ export default function SimPage() {
     const stayHiClock = formatEta(simNow, stay.totalHi);
     const mainName = plan.label;
     let fastest: 'stay' | 'reroute' | 'stop' = 'stay';
-    let bestS = stay.total;
+    let rerouteSuggest = false;
     let switchNote: string | null = null;
 
     // Nearest warned incident on the plan anchors divergence + decide-by.
@@ -2335,7 +2286,10 @@ export default function SimPage() {
       const viaName = routeName(altData.description, altData.steps);
       const saveSec = stay.total - bestAlt.totalSec;
       const thresholdSec = Math.max(SWITCH_SAVE_MIN * 60, stay.total * 0.1);
-      let suggest = saveSec >= thresholdSec;
+      // Non-finite stay with a finite alternative: suggest the alternative.
+      let suggest = Number.isFinite(saveSec)
+        ? saveSec >= thresholdSec
+        : Number.isFinite(bestAlt.totalSec);
       const pick = lastPickRef.current;
       const changedSincePick = pick !== null && lastChangeRef.current > pick.at;
       if (
@@ -2346,11 +2300,13 @@ export default function SimPage() {
         suggest = false;
         switchNote = `Holding your route for ${Math.max(1, Math.ceil(PLAN_HOLD_SEC - (simNow - pick.at)))} s`;
       } else if (!suggest) {
-        switchNote =
-          saveSec < SWITCH_SAVE_MIN * 60
+        switchNote = !Number.isFinite(saveSec)
+          ? 'Route comparison unavailable'
+          : saveSec < SWITCH_SAVE_MIN * 60
             ? 'Switching saves under 3 min'
-            : `Switching saves only ${Math.round(saveSec / 60)} min`;
+            : `Switching saves only ${fmtInt(saveSec / 60)} min`;
       }
+      rerouteSuggest = suggest;
       reroute = {
         available: true,
         arrivalClock: formatEta(simNow, bestAlt.totalSec),
@@ -2366,10 +2322,6 @@ export default function SimPage() {
           ? undefined
           : `Every route has incidents; ${viaName} has the shortest delay`,
       };
-      if (suggest && bestAlt.totalSec < bestS) {
-        bestS = bestAlt.totalSec;
-        fastest = 'reroute';
-      }
     }
 
     // STOP: nearest gas/rest/coffee between you and the decision point, using
@@ -2420,10 +2372,6 @@ export default function SimPage() {
                   resumeAt,
                   arrivalS,
                 };
-                if (arrivalS < bestS) {
-                  bestS = arrivalS;
-                  fastest = 'stop';
-                }
               }
             }
           }
@@ -2432,6 +2380,13 @@ export default function SimPage() {
         }
       }
     }
+
+    // Fastest ignores non-finite scores: a NaN total can never win Best.
+    fastest = pickFastest(
+      stay.total,
+      bestAlt ? { totalSec: bestAlt.totalSec, suggest: rerouteSuggest } : null,
+      stop ? stop.arrivalS : null,
+    );
 
     if (token !== optionsTokenRef.current) return;
     setOptions({
@@ -2513,7 +2468,7 @@ export default function SimPage() {
     lastPickRef.current = { at: simTimeRef.current, planIdx: currentIdxRef.current };
     setChoice({
       kind: 'stop',
-      label: `Wait at ${s.name} (${Math.round(s.waitMin)} min)`,
+      label: `Wait at ${s.name} (${fmtInt(s.waitMin)} min)`,
       incidentId: warnedIdsRef.current[0],
     });
     void computeOptions();
@@ -2854,7 +2809,9 @@ export default function SimPage() {
               (hud.simTime - latestW.atT) / 60,
               w.reports.some((r) => !r.incident),
             );
-            return rem.unconfirmed ? 'about 5 min (unconfirmed)' : `about ${rem.likelyMin} min`;
+            return rem.unconfirmed
+              ? 'about 5 min (unconfirmed)'
+              : `about ${fmtInt(rem.likelyMin)} min`;
           })()
         : 'estimating…';
       warnEntries.push({
@@ -3275,7 +3232,9 @@ export default function SimPage() {
           simTimeRef.current,
           'same',
           {
-            preAssessed: imp.stored,
+            // /try's stored assessment has no sim timestamp: stamp it now,
+            // or every aged clearance below reads NaN.
+            preAssessed: { ...imp.stored, atT: simTimeRef.current },
             thumbnail: imp.stills[0]?.jpeg ?? null,
             agentCost: imp.cost,
           },
@@ -3573,7 +3532,7 @@ export default function SimPage() {
             <p className="text-base font-bold text-stone-900">
               {typePhrase(warned.type)} ahead ·{' '}
               {warnLikely !== null
-                ? `clears in about ${warnShownMin ?? warnLikely} min`
+                ? `clears in about ${fmtInt(warnShownMin ?? warnLikely)} min`
                 : 'ongoing'}
             </p>
             {warnedStageWords && (
@@ -3667,7 +3626,10 @@ export default function SimPage() {
                     {checking > 0 && <div aria-hidden="true" className="anim-scan" />}
                   </div>
                 )}
-                {warnLow !== null && warnHigh !== null && (
+                {warnLow !== null &&
+                  warnHigh !== null &&
+                  Number.isFinite(warnLow) &&
+                  Number.isFinite(warnHigh) && (
                   <>
                     <div aria-hidden="true" className="mt-2 h-2 w-full rounded-full bg-stone-200">
                       <div
@@ -3906,19 +3868,19 @@ export default function SimPage() {
                           {d.notifiedAt !== null && (
                             <ul className="mt-1 space-y-1 text-sm tabular-nums text-stone-700">
                               <li>
-                                Stay {Math.round(opts.stayMin)} min{opts.best === 'stay' ? ' ✓' : ''}
+                                Stay {fmtInt(opts.stayMin)} min{opts.best === 'stay' ? ' ✓' : ''}
                               </li>
                               {opts.rerouteMin !== null && opts.rerouteIdx !== null && (
                                 <li>
-                                  Reroute via {d.routeNames[opts.rerouteIdx]} {Math.round(opts.rerouteMin)} min
+                                  Reroute via {d.routeNames[opts.rerouteIdx]} {fmtInt(opts.rerouteMin)} min
                                   {opts.best === 'reroute' ? ' ✓' : ''}
                                   {opts.fewestDelaysReason ? ` (${opts.fewestDelaysReason})` : ''}
                                 </li>
                               )}
                               {opts.stopMin !== null && opts.stopWaitMin !== null && (
                                 <li>
-                                  Stop &amp; wait {Math.round(opts.stopWaitMin)} min, arrive in{' '}
-                                  {Math.round(opts.stopMin)} min{opts.best === 'stop' ? ' ✓' : ''}
+                                  Stop &amp; wait {fmtInt(opts.stopWaitMin)} min, arrive in{' '}
+                                  {fmtInt(opts.stopMin)} min{opts.best === 'stop' ? ' ✓' : ''}
                                 </li>
                               )}
                             </ul>
@@ -4001,12 +3963,12 @@ export default function SimPage() {
                     <p className="text-sm font-semibold">
                       {remaining.unconfirmed
                         ? 'Clears in about 5 min'
-                        : `Clears in about ${remaining.likelyMin} min`}
+                        : `Clears in about ${fmtInt(remaining.likelyMin)} min`}
                     </p>
                     <p className="text-xs text-stone-600">
                       {remaining.unconfirmed
                         ? 'Range 0–10 min'
-                        : `Range ${remaining.lowMin}–${remaining.highMin} min · ${confidencePhrase(latest.assessment.confidence)}`}
+                        : `Range ${fmtInt(remaining.lowMin)}–${fmtInt(remaining.highMin)} min · ${confidencePhrase(latest.assessment.confidence)}`}
                     </p>
                     {latest.assessment.confidence === 'low' && (
                       <p className="text-xs font-semibold text-amber-800">
@@ -4098,7 +4060,7 @@ export default function SimPage() {
                           })()}
                           {r.direction === 'oncoming' ? ' · seen by an oncoming car' : ''}
                           {a &&
-                            ` · ${a.assessment.changesSinceLast} · ${Math.round(a.assessment.clearance.lowMin)}–${Math.round(a.assessment.clearance.highMin)} min`}
+                            ` · ${a.assessment.changesSinceLast} · ${fmtInt(a.assessment.clearance.lowMin)}–${fmtInt(a.assessment.clearance.highMin)} min`}
                         </li>
                       );
                     })}

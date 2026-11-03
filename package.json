@@ -11,6 +11,7 @@
     "test:jam": "tsx scripts/test-jam-model.ts",
     "test:stop": "tsx scripts/test-stop-wait.ts",
     "test:agent": "tsx scripts/agent-check.ts",
+    "test:guard": "tsx scripts/test-clearance-guard.ts",
     "blur:sam": "tsx scripts/blur-run.ts",
     "blur:clips": "tsx scripts/blur-clips.ts",
     "snapshot": "tsx scripts/export-snapshot.ts",
