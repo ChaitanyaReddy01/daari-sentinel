@@ -355,52 +355,11 @@ html {
   animation-delay: -3.3s;
 }
 
-/* The You car: top lane → Exit 38 → CT-15 → entrance ramp → past the
-   crash. It stays on CT-15 while the police and tow truck arrive below. */
-@keyframes sc3-you {
-  0% {
-    transform: translate(-60px, 0);
-    opacity: 0;
-  }
-  7% {
-    transform: translate(-20px, 0);
-    opacity: 1;
-  }
-  20% {
-    transform: translate(30px, 0);
-  }
-  29% {
-    transform: translate(58px, -123px);
-  }
-  38% {
-    transform: translate(150px, -123px);
-  }
-  52% {
-    transform: translate(240px, -123px);
-  }
-  66% {
-    transform: translate(310px, -110px);
-  }
-  73% {
-    transform: translate(312px, 0);
-    opacity: 1;
-  }
-  82% {
-    transform: translate(420px, 0);
-    opacity: 1;
-  }
-  88%,
-  100% {
-    transform: translate(500px, 0);
-    opacity: 0;
-  }
-}
+/* The You car rides #hs-detour via SMIL mpath (see hero-scene.tsx), so
+   no CSS motion applies here. */
 
-.sc3-you {
-  animation: sc3-you 12s ease-in-out infinite;
-}
-
-/* CT-15 detour highlight: draws progressively just ahead of the You car. */
+/* Detour highlight: reveals along the same path in sync with the car,
+   which traverses 14-87% of the loop — the reveal holds a ~3% lead. */
 .sc3-detour {
   stroke-dasharray: 1;
   animation: sc3-detour 12s linear infinite;
@@ -408,27 +367,23 @@ html {
 
 @keyframes sc3-detour {
   0%,
-  22% {
+  13.9% {
     stroke-dashoffset: 1;
     opacity: 0;
   }
-  27% {
-    stroke-dashoffset: 0.9;
+  14% {
+    stroke-dashoffset: 0.972;
     opacity: 1;
   }
-  50% {
-    stroke-dashoffset: 0.45;
-    opacity: 1;
-  }
-  68% {
-    stroke-dashoffset: 0.06;
-    opacity: 1;
-  }
-  74% {
+  85% {
     stroke-dashoffset: 0;
     opacity: 1;
   }
-  84%,
+  92% {
+    stroke-dashoffset: 0;
+    opacity: 1;
+  }
+  96%,
   100% {
     stroke-dashoffset: 0;
     opacity: 0;

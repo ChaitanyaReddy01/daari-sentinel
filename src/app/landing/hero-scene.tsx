@@ -6,9 +6,9 @@
  * tow truck arrives → You rejoins past the crash → green "Road clear".
  * Static frame under reduced motion.
  *
- * Timeline (12 s loop): crash pops ~15%, queue amber one-by-one 20-28%,
- * You exits ~27% and rejoins ~72%, police stops ~50%, tow stops ~63%,
- * all clear 82-90%.
+ * Timeline (12 s loop): crash pops ~15%, queue amber one-by-one 20-34%,
+ * You rides one detour path (mpath): exits ~28%, on CT-15 while police
+ * stops ~50% and tow stops ~63%, rejoins ~80%, all clear 82-90%.
  */
 import type { CSSProperties } from "react";
 
@@ -94,16 +94,17 @@ export function HeroScene() {
         CT-15
       </text>
 
-      {/* Exit 38 ramp (I-95 up to CT-15) */}
-      <path d="M144 182 C144 150 146 120 150 88" stroke="#16263f" strokeWidth="12" strokeLinecap="round" fill="none" />
-      <path d="M144 182 C144 150 146 120 150 88" stroke="#3b537f" strokeWidth="2" strokeDasharray="6 6" fill="none" />
-      <text x="134" y="148" textAnchor="end" fill="#93c5fd" fontSize="11" fontFamily="monospace">
+      {/* Exit 38 ramp (I-95 up to CT-15). Same curve as the detour path
+          below, so the road, the ramp and the blue route line up exactly. */}
+      <path d="M 110 196 C 140 196 142 120 150 73" stroke="#16263f" strokeWidth="12" strokeLinecap="round" fill="none" />
+      <path d="M 110 196 C 140 196 142 120 150 73" stroke="#3b537f" strokeWidth="2" strokeDasharray="6 6" fill="none" />
+      <text x="130" y="148" textAnchor="end" fill="#93c5fd" fontSize="11" fontFamily="monospace">
         Exit 38
       </text>
 
-      {/* Entrance ramp (CT-15 back down to I-95) */}
-      <path d="M404 88 C406 120 410 150 412 182" stroke="#16263f" strokeWidth="12" strokeLinecap="round" fill="none" />
-      <path d="M404 88 C406 120 410 150 412 182" stroke="#3b537f" strokeWidth="2" strokeDasharray="6 6" fill="none" />
+      {/* Entrance ramp (CT-15 back down to I-95). Same curve as the detour. */}
+      <path d="M 398 73 C 406 130 408 196 440 196" stroke="#16263f" strokeWidth="12" strokeLinecap="round" fill="none" />
+      <path d="M 398 73 C 406 130 408 196 440 196" stroke="#3b537f" strokeWidth="2" strokeDasharray="6 6" fill="none" />
 
       {/* I-95 S: straight 2-lane highway with a shoulder below */}
       <rect x="0" y="180" width="480" height="64" fill="#16263f" />
@@ -112,15 +113,19 @@ export function HeroScene() {
       <line x1="0" y1="212" x2="480" y2="212" stroke="#3b537f" strokeWidth="3" strokeDasharray="22 18" />
       <rect x="0" y="244" width="480" height="14" fill="#101d33" />
       <rect x="0" y="256" width="480" height="2" fill="#2c4a7c" />
-      <text x="14" y="206" fill="#7d90b5" fontSize="11" fontFamily="monospace" letterSpacing="2">
+      <text x="14" y="174" fill="#7d90b5" fontSize="11" fontFamily="monospace" letterSpacing="2">
         I-95 S
       </text>
 
       <g className="scene-motion">
-        {/* Blue detour highlight: draws progressively as the You car travels it */}
+        {/* THE detour path: I-95 right lane from the left → Exit 38 ramp →
+            along CT-15 → entrance ramp → I-95 right lane after the crash.
+            The blue highlight reveals along it, and the You car below rides
+            it via mpath, so the two can never disagree. */}
         <path
+          id="hs-detour"
           className="sc3-detour"
-          d="M128 196 C136 150 138 120 140 73 L400 73 C404 120 406 150 408 196"
+          d="M -30 196 L 110 196 C 140 196 142 120 150 73 L 398 73 C 406 130 408 196 440 196 L 505 196"
           fill="none"
           stroke="#3b82f6"
           strokeWidth="5"
@@ -190,13 +195,26 @@ export function HeroScene() {
           <circle className="sc3-beacon" cx="44" cy="240" r="2.6" fill="#f59e0b" />
         </g>
 
-        {/* The blue "You" car: exits, detours via CT-15, rejoins past the crash */}
+        {/* The blue "You" car: rides the detour path above via mpath and
+            turns with the ramps (rotate=auto). Parked off-screen for the
+            first 14% and last 13% of the loop; the sprite is centered on
+            the path point. */}
         <g
           className="sc3-you"
           style={{ '--car-body': '#3b82f6', '--car-roof': '#1d4ed8', '--car-line': '#dbeafe' } as CSSProperties}
         >
-          <use href="#hs-car" x="0" y="185" width="42" height="22" />
-          <text x="7" y="199" fill="#fff" fontSize="11" fontWeight="bold">
+          <animateMotion
+            dur="12s"
+            repeatCount="indefinite"
+            rotate="auto"
+            calcMode="paced"
+            keyPoints="0;0;1;1"
+            keyTimes="0;0.14;0.87;1"
+          >
+            <mpath href="#hs-detour" />
+          </animateMotion>
+          <use href="#hs-car" x="-21" y="-11" width="42" height="22" />
+          <text x="-14" y="4" fill="#fff" fontSize="11" fontWeight="bold">
             You
           </text>
         </g>
@@ -231,7 +249,7 @@ export function HeroScene() {
       {/* Static frame for reduced motion: queue, crash, police, detour, alert card */}
       <g className="scene-static">
         <path
-          d="M128 196 C136 150 138 120 140 73 L400 73 C404 120 406 150 408 196"
+          d="M 110 196 C 140 196 142 120 150 73 L 398 73 C 406 130 408 196 440 196"
           fill="none"
           stroke="#3b82f6"
           strokeWidth="5"
