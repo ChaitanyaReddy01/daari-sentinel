@@ -1,6 +1,27 @@
 import type { Metadata } from "next";
+import { Archivo, IBM_Plex_Mono, Public_Sans } from "next/font/google";
 import localFont from "next/font/local";
 import "./globals.css";
+
+// Landing + /judge fonts only (applied via .landing-root; other pages untouched).
+const displayFont = Archivo({
+  subsets: ["latin"],
+  weight: ["800", "900"],
+  variable: "--font-display",
+  display: "optional",
+});
+const bodyFont = Public_Sans({
+  subsets: ["latin"],
+  weight: ["400", "500", "600", "700"],
+  variable: "--font-body",
+  display: "optional",
+});
+const monoFont = IBM_Plex_Mono({
+  subsets: ["latin"],
+  weight: ["400", "500", "600"],
+  variable: "--font-landing-mono",
+  display: "optional",
+});
 
 const geistSans = localFont({
   src: "./fonts/GeistVF.woff",
@@ -51,7 +72,7 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body
-        className={`${geistSans.variable} ${geistMono.variable} antialiased`}
+        className={`${geistSans.variable} ${geistMono.variable} ${displayFont.variable} ${bodyFont.variable} ${monoFont.variable} antialiased`}
       >
         {children}
       </body>
