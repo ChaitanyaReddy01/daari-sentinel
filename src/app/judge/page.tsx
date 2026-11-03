@@ -52,19 +52,24 @@ export default function Judge() {
     <div className="landing-root min-h-dvh">
       <main className="mx-auto flex w-full max-w-3xl flex-col gap-8 px-4 py-6 pb-16">
         <header className="flex items-center justify-between gap-4">
-          <Link href="/" className="font-display text-lg font-extrabold tracking-tight">
+          <Link href="/" className="font-display text-lg font-bold tracking-tight">
             Daari Sentinel
           </Link>
-          <Link href="/" className="text-sm font-semibold text-sky-300 underline hover:text-white">
+          <Link href="/" className="text-sm font-semibold text-[#7CB4FF] hover:text-white hover:underline">
             ← Back
           </Link>
         </header>
 
         <section aria-label="Judge path">
           <p className="mile-label">Judge path · 3 minutes</p>
-          <h1 className="font-display mt-2 text-3xl font-black tracking-tight sm:text-4xl">
+          <h1 className="font-display mt-2 text-3xl font-bold leading-[1.1] tracking-tight sm:text-4xl">
             Seven steps, everything proven
           </h1>
+          <p className="mt-3 text-sm">
+            <Link href="/#howto" className="font-semibold text-[#7CB4FF] hover:text-white hover:underline">
+              How to use it →
+            </Link>
+          </p>
           <ol className="mt-6 flex flex-col gap-3">
             {STEPS.map((s, i) => (
               <li key={s.title} className="rd-card flex gap-4 p-4">
@@ -77,11 +82,11 @@ export default function Judge() {
                 <div>
                   <a
                     href={s.href}
-                    className="text-base font-bold text-sky-200 underline hover:text-white"
+                    className="text-base font-bold text-[#7CB4FF] hover:text-white hover:underline"
                   >
                     {s.title} →
                   </a>
-                  <p className="mt-1 text-sm leading-relaxed text-slate-300">{s.look}</p>
+                  <p className="mt-1 text-base leading-relaxed text-slate-300 sm:text-[17px]">{s.look}</p>
                 </div>
               </li>
             ))}

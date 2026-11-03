@@ -346,6 +346,69 @@ function reportNumber(reportId: string): string {
   return m ? m[1] : reportId;
 }
 
+/**
+ * First-visit tip bubble. Anchored next to its target on desktop, a bottom
+ * sheet on mobile. No entrance animation (safe under reduced motion).
+ */
+function TipBubble({
+  step,
+  total,
+  text,
+  onGotIt,
+  onSkip,
+  above,
+}: {
+  step: number;
+  total: number;
+  text: string;
+  onGotIt: () => void;
+  onSkip: () => void;
+  above?: boolean;
+}) {
+  return (
+    <div
+      role="dialog"
+      aria-label={`Tip ${step} of ${total}`}
+      className={`rounded-xl border border-stone-300 bg-white p-3 text-sm text-stone-800 shadow-lg max-sm:fixed max-sm:inset-x-3 max-sm:bottom-3 max-sm:z-50 sm:absolute sm:left-0 sm:z-30 sm:w-64 ${above === true ? 'sm:bottom-full sm:mb-2' : 'sm:top-full sm:mt-2'}`}
+    >
+      <p className="text-xs font-semibold text-stone-500">
+        Tip {step} of {total}
+      </p>
+      <p className="mt-1">{text}</p>
+      <div className="mt-2 flex gap-2">
+        <button
+          type="button"
+          onClick={onGotIt}
+          className="min-h-[44px] flex-1 rounded-md bg-[#F2B544] px-3 text-sm font-semibold text-stone-950 hover:bg-[#F6C453]"
+        >
+          Got it
+        </button>
+        <button
+          type="button"
+          onClick={onSkip}
+          className="min-h-[44px] px-3 text-sm font-semibold text-stone-600 hover:underline"
+        >
+          Skip tips
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function HelpButton({ onClick, label }: { onClick: () => void; label: string }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label={label}
+      title={label}
+      className="flex min-h-[44px] min-w-[44px] items-center justify-center rounded-full border border-stone-300 text-lg font-bold text-stone-600"
+    >
+      ?
+    </button>
+  );
+}
+
 /** The model sometimes prefixes narrowsIf with "Narrows if" itself. */
 function stripNarrowsPrefix(s: string): string {
   return s.replace(/^\s*narrows\s+if\s*:?\s*/i, '');
@@ -550,6 +613,27 @@ export default function SimPage() {
   const [demoOn, setDemoOn] = useState(false);
   const [muted, setMuted] = useState(false);
   const [follow, setFollow] = useState(true);
+  const [tipsSeen, setTipsSeen] = useState<boolean>(() => {
+    try {
+      return typeof window !== 'undefined' && window.localStorage.getItem('sim-tips-seen-v1') === '1';
+    } catch {
+      return false;
+    }
+  });
+  const [tipStep, setTipStep] = useState<number | null>(null);
+  useEffect(() => {
+    if (!tipsSeen) setTipStep(0);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  const finishTips = () => {
+    setTipStep(null);
+    setTipsSeen(true);
+    try {
+      window.localStorage.setItem('sim-tips-seen-v1', '1');
+    } catch {
+      /* private mode: tips simply show again */
+    }
+  };
   const [currentIdx, setCurrentIdx] = useState(0);
   const [choice, setChoice] = useState<Choice | null>(null);
   const [warnedIds, setWarnedIds] = useState<number[]>([]);
@@ -3251,9 +3335,12 @@ export default function SimPage() {
 
   if (phase === 'plan') {
     return (
-      <main className="mx-auto flex min-h-dvh w-full max-w-2xl flex-col gap-4 p-4">
+      <main className="app-root mx-auto flex min-h-dvh w-full max-w-2xl flex-col gap-4 p-4">
         <header>
-          <h1 className="text-2xl font-bold">Plan your drive</h1>
+          <div className="flex items-center justify-between gap-2">
+            <h1 className="text-2xl font-bold leading-[1.1] tracking-tight">Plan your drive</h1>
+            <HelpButton onClick={() => setTipStep(0)} label="Show tips" />
+          </div>
           <p className="text-sm text-stone-600">
             Daari Sentinel simulates your trip with live incident warnings.
           </p>
@@ -3304,6 +3391,16 @@ export default function SimPage() {
                 ))}
               </ul>
             )}
+            {tipStep === 0 && (
+              <TipBubble
+                step={1}
+                total={3}
+                text="Where are you going? Type a destination to plan your trip."
+                onGotIt={() => setTipStep(1)}
+                onSkip={finishTips}
+                above
+              />
+            )}
           </div>
           <button
             type="button"
@@ -3330,7 +3427,7 @@ export default function SimPage() {
           type="button"
           onClick={planTrip}
           disabled={planBusy || (!destPick && toInput.trim().length < 2)}
-          className="min-h-[44px] rounded-md bg-stone-900 px-4 font-semibold text-white disabled:opacity-50"
+          className="min-h-[44px] rounded-md bg-[#F2B544] px-4 font-semibold text-stone-950 hover:bg-[#F6C453] disabled:opacity-50"
         >
           {planBusy ? 'Finding route…' : 'Get route'}
         </button>
@@ -3347,14 +3444,25 @@ export default function SimPage() {
             <p className="text-sm text-stone-600">
               {plan.routes.length} route{plan.routes.length === 1 ? '' : 's'} found
             </p>
-            <button
-              type="button"
-              onClick={beginDrive}
-              disabled={planBusy}
-              className="mt-3 min-h-[44px] w-full rounded-md bg-blue-700 px-4 font-semibold text-white disabled:opacity-50"
-            >
-              Start drive
-            </button>
+            <div className="relative">
+              <button
+                type="button"
+                onClick={beginDrive}
+                disabled={planBusy}
+                className="mt-3 min-h-[44px] w-full rounded-md bg-[#F2B544] px-4 font-semibold text-stone-950 hover:bg-[#F6C453] disabled:opacity-50"
+              >
+                Start drive
+              </button>
+              {tipStep === 1 && plan !== null && (
+                <TipBubble
+                  step={2}
+                  total={3}
+                  text="Press Start drive when your route looks good."
+                  onGotIt={() => setTipStep(2)}
+                  onSkip={finishTips}
+                />
+              )}
+            </div>
           </section>
         )}
 
@@ -3449,7 +3557,7 @@ export default function SimPage() {
             <button
               type="button"
               onClick={() => setCaptionsSkipped(true)}
-              className="shrink-0 rounded px-2 py-1 text-xs font-semibold text-stone-300 underline hover:text-white"
+              className="shrink-0 rounded px-2 py-1 text-xs font-semibold text-stone-300 hover:text-white hover:underline"
             >
               Skip
             </button>
@@ -3496,6 +3604,7 @@ export default function SimPage() {
               >
                 {muted ? 'Unmute' : 'Mute'}
               </button>
+              <HelpButton onClick={() => setTipStep(2)} label="Show tips" />
             </div>
           </div>
           <p className="mt-1 text-sm text-stone-600">
@@ -3736,14 +3845,25 @@ export default function SimPage() {
         )}
 
         <section className="flex flex-col gap-2" aria-label="Explore more">
-          <button
-            type="button"
-            onClick={() => setExploreOpen(!exploreOpen)}
-            aria-expanded={exploreOpen}
-            className="min-h-[44px] rounded-md border border-stone-300 px-4 text-sm font-semibold text-stone-700"
-          >
-            {exploreOpen ? 'Explore more ▾' : 'Explore more ▸'}
-          </button>
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => setExploreOpen(!exploreOpen)}
+              aria-expanded={exploreOpen}
+              className="min-h-[44px] w-full rounded-md border border-stone-300 px-4 text-sm font-semibold text-stone-700"
+            >
+              {exploreOpen ? 'Explore more ▾' : 'Explore more ▸'}
+            </button>
+            {tipStep !== null && (
+              <TipBubble
+                step={3}
+                total={3}
+                text="Open “Explore more” → Drop incident to place a crash on your route."
+                onGotIt={finishTips}
+                onSkip={finishTips}
+              />
+            )}
+          </div>
           {exploreOpen && (
             <div className="anim-fade flex flex-col gap-3">
               <div className="flex flex-wrap gap-2" role="group" aria-label="Playback speed">
@@ -3762,7 +3882,7 @@ export default function SimPage() {
               <button
                 type="button"
                 onClick={() => setArming(!arming)}
-                className="min-h-[44px] rounded-md bg-stone-900 px-4 text-sm font-semibold text-white"
+                className="min-h-[44px] rounded-md bg-[#F2B544] px-4 text-sm font-semibold text-stone-950 hover:bg-[#F6C453]"
               >
                 {arming ? 'Cancel drop' : 'Drop incident'}
               </button>

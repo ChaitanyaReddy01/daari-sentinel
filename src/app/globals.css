@@ -35,7 +35,9 @@ html {
   --rd-amber: #fcd34d;
   --rd-green: #6ee7b7;
   --rd-blue: #93c5fd;
-  --rd-btn: #f59e0b;
+  --rd-link: #7cb4ff;
+  --rd-amber-soft: #f6c453;
+  --rd-btn: #f2b544;
   background: var(--rd-navy);
   color: var(--rd-ink);
   font-family: var(--font-body), system-ui, sans-serif;
@@ -43,6 +45,33 @@ html {
 
 .landing-root .font-display {
   font-family: var(--font-display), system-ui, sans-serif;
+  font-weight: 700;
+  letter-spacing: -0.015em;
+  line-height: 1.1;
+}
+
+/* Shared /sim + /try app chrome: consistent buttons, hover-only link lines. */
+.app-root button:not(:disabled) {
+  transition: transform 150ms ease-out;
+}
+
+@media (hover: hover) {
+  .app-root button:not(:disabled):hover {
+    transform: translateY(-1px);
+  }
+}
+
+.app-root button:not(.rounded-full) {
+  border-radius: 12px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-root button {
+    transition: none;
+  }
+  .app-root button:hover {
+    transform: none;
+  }
 }
 
 .landing-root .font-landing-mono {

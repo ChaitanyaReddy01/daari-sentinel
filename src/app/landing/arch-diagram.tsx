@@ -162,7 +162,7 @@ export function ArchDiagram() {
           type="button"
           onClick={replay}
           aria-label="Replay pipeline animation"
-          className="font-semibold text-sky-300 underline hover:text-white"
+          className="font-semibold text-[#7CB4FF] hover:text-white hover:underline"
         >
           Replay ↻
         </button>

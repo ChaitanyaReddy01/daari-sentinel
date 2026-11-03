@@ -20,7 +20,7 @@ export function HowLink() {
     <a
       href="#how"
       onClick={onClick}
-      className="font-semibold text-sky-300 underline hover:text-white"
+      className="font-semibold text-[#7CB4FF] hover:text-white hover:underline"
     >
       How it works
     </a>
@@ -218,7 +218,7 @@ export function HowSection() {
             <h3 className="rise font-display mt-1 text-xl font-bold" style={{ transitionDelay: '60ms' }}>
               Camera sees
             </h3>
-            <p className="rise mt-2 text-slate-300" style={{ transitionDelay: '120ms' }}>
+            <p className="rise mt-2 leading-relaxed text-slate-300 sm:text-[17px]" style={{ transitionDelay: '120ms' }}>
               Road and dash cameras watch the road. SAM 3.1 finds and tracks
               every vehicle, responder and person in the clip.
             </p>
@@ -250,7 +250,7 @@ export function HowSection() {
             <h3 className="rise font-display mt-1 text-xl font-bold" style={{ transitionDelay: '60ms' }}>
               AI checks
             </h3>
-            <p className="rise mt-2 text-slate-300" style={{ transitionDelay: '120ms' }}>
+            <p className="rise mt-2 leading-relaxed text-slate-300 sm:text-[17px]" style={{ transitionDelay: '120ms' }}>
               Muse Spark reads the scene and returns a structured verdict —
               type, severity, responders, evidence — and rejects false alarms:
               8 out of 8 normal clips cleared.
@@ -268,7 +268,7 @@ export function HowSection() {
             <h3 className="rise font-display mt-1 text-xl font-bold" style={{ transitionDelay: '60ms' }}>
               AI tracks
             </h3>
-            <p className="rise mt-2 text-slate-300" style={{ transitionDelay: '120ms' }}>
+            <p className="rise mt-2 leading-relaxed text-slate-300 sm:text-[17px]" style={{ transitionDelay: '120ms' }}>
               The incident agent follows one crash across camera reports and
               narrows the clearance range with cited evidence: likely 72 → 36
               → 10 minutes.
@@ -304,7 +304,7 @@ export function HowSection() {
             <h3 className="rise font-display mt-1 text-xl font-bold" style={{ transitionDelay: '60ms' }}>
               You decide
             </h3>
-            <p className="rise mt-2 text-slate-300" style={{ transitionDelay: '120ms' }}>
+            <p className="rise mt-2 leading-relaxed text-slate-300 sm:text-[17px]" style={{ transitionDelay: '120ms' }}>
               Stay, reroute or wait — scored against the clearance range from
               your position, with the exit where you must choose.
             </p>

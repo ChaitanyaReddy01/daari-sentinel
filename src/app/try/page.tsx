@@ -632,7 +632,7 @@ function PostMapModal({ tryId, kind, stills, detect, onClose, onPosted }: PostMo
           type="button"
           onClick={post}
           disabled={snap.status !== 'ok' || busy}
-          className="mt-2 min-h-[44px] w-full rounded-md bg-emerald-700 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-800 disabled:cursor-not-allowed disabled:opacity-40"
+          className="mt-2 min-h-[44px] w-full rounded-md bg-[#F2B544] px-4 py-2 text-sm font-semibold text-stone-950 hover:bg-[#F6C453] disabled:cursor-not-allowed disabled:opacity-40"
         >
           {busy ? 'Posting…' : kind === 'incident' ? 'Post to the live map' : 'Post all-clear'}
         </button>
@@ -1003,10 +1003,10 @@ export default function TryPage() {
   const scanImg = (src: string) => <img src={src} alt="" aria-hidden="true" className="h-auto w-full rounded" />;
 
   return (
-    <main className="mx-auto flex min-h-dvh w-full max-w-3xl flex-col gap-6 px-4 py-8">
+    <main className="app-root mx-auto flex min-h-dvh w-full max-w-3xl flex-col gap-6 px-4 py-8">
       <header className="flex flex-col gap-1">
-        <h1 className="text-2xl font-bold text-stone-900">Try your own clip</h1>
-        <p className="text-sm text-stone-600">
+        <h1 className="text-2xl font-bold leading-[1.1] tracking-tight text-stone-900">Try your own clip</h1>
+        <p className="text-base text-stone-600 sm:text-[17px]">
           Upload a short road clip (mp4 or mov, max 30 s, max 50 MB). We find the objects,
           read the scene and track the incident — then delete the clip.
         </p>
@@ -1017,10 +1017,19 @@ export default function TryPage() {
         )}
       </header>
 
+      <div className="rounded-lg border border-stone-200 bg-white p-4 text-sm text-stone-700">
+        <p className="text-xs font-semibold uppercase tracking-wide text-stone-500">How it works</p>
+        <ol className="mt-2 flex flex-col gap-1">
+          <li>1. Upload a short road clip (mp4/mov, max 30 s).</li>
+          <li>2. Normal traffic stops at a quick check; incidents get a full check, with faces and plates blurred.</li>
+          <li>3. If it’s an incident, “Post to the live map” and pick where it was filmed.</li>
+        </ol>
+      </div>
+
       <section className="flex flex-col gap-2 rounded-lg border border-stone-200 bg-white p-4">
         <label
           htmlFor="clip"
-          className="flex min-h-[44px] cursor-pointer items-center justify-center rounded-md bg-blue-700 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-800"
+          className="flex min-h-[44px] cursor-pointer items-center justify-center rounded-md bg-[#F2B544] px-4 py-2 text-sm font-semibold text-stone-950 hover:bg-[#F6C453]"
         >
           {file ? file.name : 'Pick a video'}
         </label>
@@ -1052,7 +1061,7 @@ export default function TryPage() {
             type="button"
             disabled={!canRun}
             onClick={startFlow}
-            className="min-h-[44px] flex-1 rounded-md bg-stone-900 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-40"
+            className="min-h-[44px] flex-1 rounded-md bg-[#F2B544] px-4 py-2 text-sm font-semibold text-stone-950 disabled:cursor-not-allowed disabled:opacity-40 hover:bg-[#F6C453]"
           >
             {running ? 'Analyzing…' : finished ? 'Analyzed' : quicklook && !fullStarted ? 'Quick look done' : 'Analyze this clip'}
           </button>
@@ -1163,7 +1172,7 @@ export default function TryPage() {
                 <button
                   type="button"
                   onClick={() => setPostOpen('incident')}
-                  className="mt-3 min-h-[44px] w-full rounded-md bg-emerald-700 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-800 sm:w-auto"
+                  className="mt-3 min-h-[44px] w-full rounded-md bg-[#F2B544] px-4 py-2 text-sm font-semibold text-stone-950 hover:bg-[#F6C453] sm:w-auto"
                 >
                   Post to the live map
                 </button>
@@ -1172,7 +1181,7 @@ export default function TryPage() {
                 <button
                   type="button"
                   onClick={addToSim}
-                  className="mt-2 min-h-[44px] w-full rounded-md bg-blue-700 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-800 sm:w-auto"
+                  className="mt-2 min-h-[44px] w-full rounded-md bg-[#F2B544] px-4 py-2 text-sm font-semibold text-stone-950 hover:bg-[#F6C453] sm:w-auto"
                 >
                   Add to the I-95 simulation
                 </button>
