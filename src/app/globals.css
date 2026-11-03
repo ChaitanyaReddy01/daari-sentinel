@@ -158,144 +158,177 @@ html {
   }
 }
 
-/* ---- Hero scene: ~10 s top-down road story (CSS/SVG only) ----
-   Cars flow → dashcam scans → crash → amber queue → You detours via
-   CT-15 → clear. Queue rects inherit their gray/amber fill from the group. */
+/* ---- Hero scene: ~12 s top-down road story (CSS/SVG only) ----
+   Cars flow → dashcam scans → crash + alert → amber queue with brake
+   lights → You detours via CT-15 → police arrives → tow truck arrives →
+   You rejoins past the crash → clear. One reusable car sprite; queue and
+   responder instances recolor it through --car-body / --car-roof. */
 
 .scene-static {
   display: none;
 }
 
-/* Queue cars: drive in, stop at their slot, turn amber one by one,
-   then speed off and turn gray when the road clears. */
-@keyframes sc2-q1 {
+/* Queue cars: drive in, stop behind the crash, turn amber with bright
+   brake lights one by one, then release and turn gray at clear. The sprite
+   reads its colors from these custom properties (discrete steps are fine). */
+@keyframes sc3-q1 {
   0% {
-    transform: translateX(-340px);
-    fill: #94a3b8;
+    transform: translateX(-330px);
+    opacity: 0;
+    --car-body: #94a3b8;
+    --car-roof: #64748b;
+    --car-tail: #7f1d1d;
   }
-  14% {
-    transform: translateX(-24px);
-  }
-  18%,
-  75% {
+  8%,
+  76% {
     transform: translateX(0);
+    opacity: 1;
   }
   20% {
-    fill: #94a3b8;
+    --car-body: #94a3b8;
+    --car-roof: #64748b;
+    --car-tail: #7f1d1d;
   }
-  24%,
-  74% {
-    fill: #f59e0b;
-  }
-  78% {
-    fill: #94a3b8;
-  }
+  26%,
   80% {
-    transform: translateX(120px);
+    --car-body: #f59e0b;
+    --car-roof: #b45309;
+    --car-tail: #ef4444;
   }
-  86%,
+  84%,
+  90% {
+    transform: translateX(80px);
+    opacity: 1;
+  }
+  88% {
+    --car-body: #94a3b8;
+    --car-roof: #64748b;
+    --car-tail: #7f1d1d;
+  }
+  94%,
   100% {
-    transform: translateX(252px);
+    transform: translateX(220px);
+    opacity: 0;
   }
 }
 
-.sc2-q1 {
-  animation: sc2-q1 10s linear infinite;
+.sc3-q1 {
+  animation: sc3-q1 12s ease-in-out infinite;
 }
 
-@keyframes sc2-q2 {
+@keyframes sc3-q2 {
   0% {
-    transform: translateX(-332px);
-    fill: #94a3b8;
+    transform: translateX(-288px);
+    opacity: 0;
+    --car-body: #94a3b8;
+    --car-roof: #64748b;
+    --car-tail: #7f1d1d;
   }
-  14% {
-    transform: translateX(-24px);
-  }
-  18%,
-  75% {
+  8%,
+  77% {
     transform: translateX(0);
+    opacity: 1;
   }
-  25% {
-    fill: #94a3b8;
+  24% {
+    --car-body: #94a3b8;
+    --car-roof: #64748b;
+    --car-tail: #7f1d1d;
   }
-  29%,
-  74% {
-    fill: #f59e0b;
+  30%,
+  81% {
+    --car-body: #f59e0b;
+    --car-roof: #b45309;
+    --car-tail: #ef4444;
   }
+  85%,
+  91% {
+    transform: translateX(80px);
+    opacity: 1;
+  }
+  89% {
+    --car-body: #94a3b8;
+    --car-roof: #64748b;
+    --car-tail: #7f1d1d;
+  }
+  95%,
+  100% {
+    transform: translateX(220px);
+    opacity: 0;
+  }
+}
+
+.sc3-q2 {
+  animation: sc3-q2 12s ease-in-out infinite;
+}
+
+@keyframes sc3-q3 {
+  0% {
+    transform: translateX(-246px);
+    opacity: 0;
+    --car-body: #94a3b8;
+    --car-roof: #64748b;
+    --car-tail: #7f1d1d;
+  }
+  8%,
   78% {
-    fill: #94a3b8;
-  }
-  80% {
-    transform: translateX(140px);
-  }
-  86%,
-  100% {
-    transform: translateX(288px);
-  }
-}
-
-.sc2-q2 {
-  animation: sc2-q2 10s linear infinite;
-}
-
-@keyframes sc2-q3 {
-  0% {
-    transform: translateX(-336px);
-    fill: #7d90b5;
-  }
-  14% {
-    transform: translateX(-24px);
-  }
-  18%,
-  75% {
     transform: translateX(0);
+    opacity: 1;
   }
-  30% {
-    fill: #7d90b5;
+  28% {
+    --car-body: #94a3b8;
+    --car-roof: #64748b;
+    --car-tail: #7f1d1d;
   }
   34%,
-  74% {
-    fill: #f59e0b;
-  }
-  78% {
-    fill: #7d90b5;
-  }
-  80% {
-    transform: translateX(160px);
+  82% {
+    --car-body: #f59e0b;
+    --car-roof: #b45309;
+    --car-tail: #ef4444;
   }
   86%,
+  92% {
+    transform: translateX(80px);
+    opacity: 1;
+  }
+  90% {
+    --car-body: #94a3b8;
+    --car-roof: #64748b;
+    --car-tail: #7f1d1d;
+  }
+  96%,
   100% {
-    transform: translateX(324px);
+    transform: translateX(220px);
+    opacity: 0;
   }
 }
 
-.sc2-q3 {
-  animation: sc2-q3 10s linear infinite;
+.sc3-q3 {
+  animation: sc3-q3 12s ease-in-out infinite;
 }
 
 /* Dashcam scan beam: sweeps while approaching, off once the crash is found. */
-@keyframes sc2-beam {
+@keyframes sc3-beam {
   0%,
-  5% {
+  4% {
     opacity: 0;
   }
-  8%,
-  12%,
-  16% {
+  7%,
+  10%,
+  13% {
     opacity: 0.85;
   }
-  10%,
-  14% {
+  8.5%,
+  11.5% {
     opacity: 0.4;
   }
-  20%,
+  17%,
   100% {
     opacity: 0;
   }
 }
 
-.sc2-beam {
-  animation: sc2-beam 10s linear infinite;
+.sc3-beam {
+  animation: sc3-beam 12s linear infinite;
 }
 
 /* Through traffic: steady independent loops in the open lane. */
@@ -322,115 +355,115 @@ html {
   animation-delay: -3.3s;
 }
 
-/* The You car: top lane → Exit 38 → CT-15 → entrance ramp → past the crash. */
-@keyframes sc2-you {
+/* The You car: top lane → Exit 38 → CT-15 → entrance ramp → past the
+   crash. It stays on CT-15 while the police and tow truck arrive below. */
+@keyframes sc3-you {
   0% {
-    transform: translate(-70px, 0);
+    transform: translate(-60px, 0);
+    opacity: 0;
   }
-  18% {
-    transform: translate(52px, 0);
+  7% {
+    transform: translate(-20px, 0);
+    opacity: 1;
   }
-  28% {
-    transform: translate(112px, 0);
+  20% {
+    transform: translate(30px, 0);
   }
-  31% {
-    transform: translate(129px, -14px);
+  29% {
+    transform: translate(58px, -123px);
   }
-  34% {
-    transform: translate(129px, -46px);
-  }
-  37% {
-    transform: translate(131px, -76px);
-  }
-  40% {
-    transform: translate(135px, -123px);
-  }
-  42% {
+  38% {
     transform: translate(150px, -123px);
   }
-  60% {
-    transform: translate(380px, -123px);
-  }
-  63% {
-    transform: translate(389px, -123px);
+  52% {
+    transform: translate(240px, -123px);
   }
   66% {
-    transform: translate(391px, -76px);
+    transform: translate(310px, -110px);
   }
-  69% {
-    transform: translate(395px, -46px);
+  73% {
+    transform: translate(312px, 0);
+    opacity: 1;
   }
-  72% {
-    transform: translate(397px, -14px);
+  82% {
+    transform: translate(420px, 0);
+    opacity: 1;
   }
-  74% {
-    transform: translate(404px, 0);
-  }
-  82%,
+  88%,
   100% {
-    transform: translate(520px, 0);
+    transform: translate(500px, 0);
+    opacity: 0;
   }
 }
 
-.sc2-you {
-  animation: sc2-you 10s linear infinite;
+.sc3-you {
+  animation: sc3-you 12s ease-in-out infinite;
 }
 
 /* CT-15 detour highlight: draws progressively just ahead of the You car. */
-.sc2-detour {
+.sc3-detour {
   stroke-dasharray: 1;
-  animation: sc2-detour 10s linear infinite;
+  animation: sc3-detour 12s linear infinite;
 }
 
-@keyframes sc2-detour {
+@keyframes sc3-detour {
   0%,
-  29% {
+  22% {
     stroke-dashoffset: 1;
     opacity: 0;
   }
-  31% {
+  27% {
+    stroke-dashoffset: 0.9;
     opacity: 1;
   }
-  64%,
-  80% {
+  50% {
+    stroke-dashoffset: 0.45;
+    opacity: 1;
+  }
+  68% {
+    stroke-dashoffset: 0.06;
+    opacity: 1;
+  }
+  74% {
     stroke-dashoffset: 0;
     opacity: 1;
   }
-  86%,
+  84%,
   100% {
     stroke-dashoffset: 0;
     opacity: 0;
   }
 }
 
-/* Crash marker: pops in, holds, swaps for the green clear marker. */
-@keyframes sc2-crash {
+/* Crash marker: pops in, holds through the responder beats, swaps for
+   the green clear marker. */
+@keyframes sc3-crash {
   0%,
-  15% {
+  12% {
     opacity: 0;
     transform: scale(0.4);
   }
-  18% {
+  16% {
     opacity: 1;
     transform: scale(1);
   }
-  21% {
+  19% {
     transform: scale(1.08);
   }
-  24%,
-  74% {
+  22%,
+  78% {
     opacity: 1;
     transform: scale(1);
   }
-  77%,
+  82%,
   100% {
     opacity: 0;
     transform: scale(1);
   }
 }
 
-.sc2-crash {
-  animation: sc2-crash 10s linear infinite;
+.sc3-crash {
+  animation: sc3-crash 12s linear infinite;
   transform-box: fill-box;
   transform-origin: center;
 }
@@ -456,112 +489,266 @@ html {
   animation-delay: 0.8s;
 }
 
-@keyframes sc2-clear {
+@keyframes sc3-clear {
   0%,
-  74% {
+  78% {
     opacity: 0;
   }
-  78%,
-  88% {
+  82%,
+  90% {
     opacity: 1;
   }
-  92%,
+  94%,
   100% {
     opacity: 0;
   }
 }
 
-.sc2-clear {
-  animation: sc2-clear 10s linear infinite;
+.sc3-clear {
+  animation: sc3-clear 12s linear infinite;
 }
 
-/* Alert card: crash lines → rerouting → road clear. */
-@keyframes sc2-cardbg {
+/* Police car: enters along the shoulder, stops next to the crash, leaves. */
+@keyframes sc3-police {
   0%,
-  18% {
+  38% {
+    transform: translateX(-60px);
+    opacity: 0;
+  }
+  44% {
+    transform: translateX(120px);
+    opacity: 1;
+  }
+  50%,
+  79% {
+    transform: translateX(326px);
+    opacity: 1;
+  }
+  84% {
+    transform: translateX(430px);
+    opacity: 1;
+  }
+  90%,
+  100% {
+    transform: translateX(520px);
+    opacity: 0;
+  }
+}
+
+.sc3-police {
+  animation: sc3-police 12s ease-in-out infinite;
+}
+
+/* Light bar halves alternate red/blue. */
+.sc3-pl-r {
+  animation: sc3-flash 0.8s steps(1) infinite;
+}
+
+.sc3-pl-b {
+  animation: sc3-flash 0.8s steps(1) infinite;
+  animation-delay: 0.4s;
+}
+
+@keyframes sc3-flash {
+  0%,
+  49% {
+    opacity: 1;
+  }
+  50%,
+  100% {
+    opacity: 0.25;
+  }
+}
+
+/* Tow truck: arrives after the police, stops behind it, leaves at clear. */
+@keyframes sc3-tow {
+  0%,
+  52% {
+    transform: translateX(-80px);
+    opacity: 0;
+  }
+  58% {
+    transform: translateX(120px);
+    opacity: 1;
+  }
+  64%,
+  80% {
+    transform: translateX(268px);
+    opacity: 1;
+  }
+  86% {
+    transform: translateX(400px);
+    opacity: 1;
+  }
+  92%,
+  100% {
+    transform: translateX(540px);
+    opacity: 0;
+  }
+}
+
+.sc3-tow {
+  animation: sc3-tow 12s ease-in-out infinite;
+}
+
+.sc3-beacon {
+  animation: sc3-beacon 0.9s ease-in-out infinite;
+}
+
+@keyframes sc3-beacon {
+  0%,
+  100% {
+    opacity: 0.3;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+/* Alert card: reroute tip → rerouting → police → tow → road clear. */
+@keyframes sc3-cardbg {
+  0%,
+  13% {
     opacity: 0;
     transform: translateY(8px);
   }
-  22%,
-  88% {
+  17%,
+  92% {
     opacity: 1;
     transform: translateY(0);
   }
-  92%,
+  94%,
   100% {
     opacity: 0;
     transform: translateY(-6px);
   }
 }
 
-.sc2-cardbg {
-  animation: sc2-cardbg 10s linear infinite;
+.sc3-cardbg {
+  animation: sc3-cardbg 12s linear infinite;
 }
 
-@keyframes sc2-l1 {
+@keyframes sc3-on-l1a {
   0%,
-  18% {
+  14% {
     opacity: 0;
   }
-  22%,
-  72% {
+  18%,
+  62% {
     opacity: 1;
   }
-  75%,
+  66%,
   100% {
     opacity: 0;
   }
 }
 
-.sc2-l1 {
-  animation: sc2-l1 10s linear infinite;
+.sc3-l1a {
+  animation: sc3-on-l1a 12s linear infinite;
 }
 
-@keyframes sc2-l2a {
+@keyframes sc3-on-l1b {
   0%,
-  20% {
+  62% {
     opacity: 0;
   }
-  24%,
-  35% {
+  66%,
+  78% {
     opacity: 1;
   }
-  39%,
+  82%,
   100% {
     opacity: 0;
   }
 }
 
-.sc2-l2a {
-  animation: sc2-l2a 10s linear infinite;
+.sc3-l1b {
+  animation: sc3-on-l1b 12s linear infinite;
 }
 
-@keyframes sc2-l2b {
+@keyframes sc3-on-l2a {
   0%,
-  39% {
+  14% {
     opacity: 0;
   }
-  43%,
-  72% {
+  18%,
+  24% {
     opacity: 1;
   }
-  76%,
+  27%,
   100% {
     opacity: 0;
   }
 }
 
-.sc2-l2b {
-  animation: sc2-l2b 10s linear infinite;
+.sc3-l2a {
+  animation: sc3-on-l2a 12s linear infinite;
 }
 
-@keyframes sc2-lclear {
+@keyframes sc3-on-l2b {
   0%,
-  76% {
+  24% {
     opacity: 0;
   }
-  80%,
-  88% {
+  27%,
+  46% {
+    opacity: 1;
+  }
+  49%,
+  100% {
+    opacity: 0;
+  }
+}
+
+.sc3-l2b {
+  animation: sc3-on-l2b 12s linear infinite;
+}
+
+@keyframes sc3-on-l2c {
+  0%,
+  46% {
+    opacity: 0;
+  }
+  49%,
+  60% {
+    opacity: 1;
+  }
+  63%,
+  100% {
+    opacity: 0;
+  }
+}
+
+.sc3-l2c {
+  animation: sc3-on-l2c 12s linear infinite;
+}
+
+@keyframes sc3-on-l2d {
+  0%,
+  60% {
+    opacity: 0;
+  }
+  63%,
+  78% {
+    opacity: 1;
+  }
+  81%,
+  100% {
+    opacity: 0;
+  }
+}
+
+.sc3-l2d {
+  animation: sc3-on-l2d 12s linear infinite;
+}
+
+@keyframes sc3-on-late {
+  0%,
+  78% {
+    opacity: 0;
+  }
+  82%,
+  90% {
     opacity: 1;
   }
   92%,
@@ -570,8 +757,8 @@ html {
   }
 }
 
-.sc2-lclear {
-  animation: sc2-lclear 10s linear infinite;
+.sc3-lclear {
+  animation: sc3-on-late 12s linear infinite;
 }
 
 /* ---- How-it-works scroll story ---- */
