@@ -1,6 +1,8 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
 
+import { TRY_DAILY_BUDGET_USD, TRY_MAX_PER_IP } from '@/lib/try-limits';
+
 import { ArchDiagram } from './landing/arch-diagram';
 import { HeroScene } from './landing/hero-scene';
 import { HowLink, HowSection } from './landing/how-story';
@@ -37,7 +39,7 @@ const QA = [
   },
   {
     q: "What's live and what's replayed?",
-    a: 'The demos replay cached real model results ($0); /try runs live calls with quotas and a daily cap (3 free tries per IP per day, $2 total daily budget).',
+    a: `The demos replay cached real model results ($0); /try runs live calls with quotas and a daily cap (${TRY_MAX_PER_IP} free tries per IP per day, $${TRY_DAILY_BUDGET_USD} total daily budget).`,
   },
   {
     q: 'What about privacy?',
@@ -45,7 +47,7 @@ const QA = [
   },
   {
     q: 'What does it cost?',
-    a: 'Quick look median $0.0002, full check $0.106, about $0.33 per driving hour at a 5% escalation rate — and $11.55 of Meta spend for the whole build. See the receipts.',
+    a: 'Quick look median $0.0002, full check $0.106, about $0.33 per driving hour at a 5% escalation rate — and $11.55 of Meta API spend for building and testing (models only, excludes coding-agent usage). See the receipts.',
   },
 ];
 
@@ -184,7 +186,8 @@ export default function Home() {
             ))}
           </div>
           <p className="mt-3 text-sm text-slate-300">
-            Total Meta spend for the whole build:{' '}
+            Meta API spend for building and testing the app&apos;s AI features (models
+            only — excludes coding-agent usage):{' '}
             <span className="font-landing-mono font-semibold text-white">$11.55</span>{' '}
             (
             <a

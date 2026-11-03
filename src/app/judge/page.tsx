@@ -1,6 +1,8 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
 
+import { TRY_MAX_PER_IP } from '@/lib/try-limits';
+
 export const metadata: Metadata = {
   title: 'Daari Sentinel judge path: the 3-minute tour',
   description:
@@ -31,7 +33,7 @@ const STEPS = [
   {
     title: 'Try your own clip',
     href: '/try',
-    look: 'A headline first, details behind “Show details”. Note the quota: 3 free tries per day.',
+    look: `A headline first, details behind “Show details”. Note the quota: ${TRY_MAX_PER_IP} free tries per day.`,
   },
   {
     title: 'Read the receipts and the limits',

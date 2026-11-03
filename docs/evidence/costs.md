@@ -1,9 +1,11 @@
 # Evidence: costs
 
-## Real spend for the whole build: $11.55
+## Meta API spend for building and testing: $11.55
 
-From `data/ledger.jsonl` (687 entries, every real API call, snapshot
-Nov 2 — the ledger itself is a working file; this page records it):
+Models only — excludes coding-agent usage, unpriced Google calls, and
+hosting. From `data/ledger.jsonl` (687 entries, every real API call,
+snapshot Nov 2 — the ledger itself is a working file; this page
+records it):
 
 | What | Spend |
 | ---- | ----- |
