@@ -6,6 +6,7 @@ import { TRY_DAILY_BUDGET_USD, TRY_MAX_PER_IP } from '@/lib/try-limits';
 import { ArchDiagram } from './landing/arch-diagram';
 import { HeroScene } from './landing/hero-scene';
 import { HowLink, HowSection } from './landing/how-story';
+import { CountUp, RevealGroup } from './landing/reveal';
 
 export const metadata: Metadata = {
   title: "Daari Sentinel: know what's ahead, and when it clears",
@@ -15,13 +16,13 @@ export const metadata: Metadata = {
 
 const EVIDENCE = 'https://github.com/ChaitanyaReddy01/daari-sentinel/blob/main/docs/evidence';
 
-const RECEIPTS = [
-  { big: '19/19', label: 'incidents detected', href: `${EVIDENCE}/detection.md` },
-  { big: '0', label: 'false alarms on 8 normal-traffic clips', href: `${EVIDENCE}/detection.md` },
-  { big: '11/11', label: 'incident clips caught by the quick check (median $0.0002 per look)', href: `${EVIDENCE}/triage.md` },
-  { big: '72 → 36 → 10', label: 'min: the clearance estimate narrowing as reports arrive', href: `${EVIDENCE}/agent.md` },
-  { big: '~$0.33', label: 'per hour of driving (estimate — 1 look/min, 5% escalate)', href: `${EVIDENCE}/triage.md` },
-  { big: '1 → 11', label: 'camera report → drivers alerted, ~3.2 driver-hours saved (simulation)', href: `${EVIDENCE}/network.md` },
+const RECEIPTS: Array<{ tokens: Array<string | number>; label: string; href: string }> = [
+  { tokens: [19, '/', 19], label: 'incidents detected', href: `${EVIDENCE}/detection.md` },
+  { tokens: [0], label: 'false alarms on 8 normal-traffic clips', href: `${EVIDENCE}/detection.md` },
+  { tokens: [11, '/', 11], label: 'incident clips caught by the quick check (median $0.0002 per look)', href: `${EVIDENCE}/triage.md` },
+  { tokens: [72, ' → ', 36, ' → ', 10], label: 'min: the clearance estimate narrowing as reports arrive', href: `${EVIDENCE}/agent.md` },
+  { tokens: ['~$', 0.33], label: 'per hour of driving (estimate — 1 look/min, 5% escalate)', href: `${EVIDENCE}/triage.md` },
+  { tokens: [1, ' → ', 11], label: 'camera report → drivers alerted, ~3.2 driver-hours saved (simulation)', href: `${EVIDENCE}/network.md` },
 ];
 
 const QA = [
@@ -132,59 +133,68 @@ export default function Home() {
 
         {/* Mile 001 · Today vs Sentinel */}
         <section aria-label="Today versus Sentinel">
-          <p className="mile-label">Mile 001 · The gap</p>
-          <h2 className="font-display mt-2 text-2xl font-extrabold sm:text-3xl">
-            Today vs Sentinel
-          </h2>
-          <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2">
-            <div className="rd-card p-4 opacity-90">
-              <p className="font-landing-mono text-xs uppercase tracking-widest text-slate-400">
-                A generic maps alert
-              </p>
-              <p className="mt-2 text-lg font-semibold text-slate-300">
-                ⚠ Crash reported · 12 min delay
-              </p>
+          <RevealGroup>
+            <p className="mile-label rv">Mile 001 · The gap</p>
+            <h2 className="font-display rv mt-2 text-2xl font-extrabold sm:text-3xl" style={{ transitionDelay: '80ms' }}>
+              Today vs Sentinel
+            </h2>
+          </RevealGroup>
+          <RevealGroup className="mt-4">
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+              <div className="rd-card rv vs-fade p-4 opacity-90">
+                <p className="font-landing-mono text-xs uppercase tracking-widest text-slate-400">
+                  A generic maps alert
+                </p>
+                <p className="mt-2 text-lg font-semibold text-slate-300">
+                  ⚠ Crash reported · 12 min delay
+                </p>
+              </div>
+              <div className="rd-card rv vs-slide p-4 ring-1 ring-amber-300" style={{ transitionDelay: '200ms' }}>
+                <p className="font-landing-mono text-xs uppercase tracking-widest text-amber-300">
+                  Daari Sentinel
+                </p>
+                <p className="mt-2 text-lg font-bold">
+                  Crash ahead · tow truck working · clears in about 10 min
+                </p>
+                <p className="mt-1 text-base text-emerald-300">
+                  ✅ Best: stay · Decide by Exit 38
+                </p>
+              </div>
             </div>
-            <div className="rd-card p-4 ring-1 ring-amber-300">
-              <p className="font-landing-mono text-xs uppercase tracking-widest text-amber-300">
-                Daari Sentinel
-              </p>
-              <p className="mt-2 text-lg font-bold">
-                Crash ahead · tow truck working · clears in about 10 min
-              </p>
-              <p className="mt-1 text-base text-emerald-300">
-                ✅ Best: stay · Decide by Exit 38
-              </p>
-            </div>
-          </div>
-          <p className="mt-3 text-sm text-slate-300">
-            Maps know something happened. Sentinel knows what stage it&apos;s at and when it ends.
-          </p>
+            <p className="rv mt-3 text-sm text-slate-300" style={{ transitionDelay: '320ms' }}>
+              Maps know something happened. Sentinel knows what stage it&apos;s at and when it ends.
+            </p>
+          </RevealGroup>
         </section>
 
         {/* Mile 002 · Receipts */}
         <section aria-label="Receipts" id="receipts" className="scroll-mt-6">
-          <p className="mile-label">Mile 002 · Receipts</p>
-          <h2 className="font-display mt-2 text-2xl font-extrabold sm:text-3xl">
-            Don&apos;t take our word for it
-          </h2>
-          <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            {RECEIPTS.map((r) => (
-              <a
-                key={r.label}
-                href={r.href}
-                className="rd-card block p-4 hover:border-amber-300"
-              >
-                <p className="font-landing-mono text-3xl font-semibold text-amber-300">
-                  {r.big}
-                </p>
-                <p className="mt-2 text-sm text-slate-200">{r.label}</p>
-                <p className="mt-2 text-xs font-semibold text-sky-300 underline">
-                  Evidence →
-                </p>
-              </a>
-            ))}
-          </div>
+          <RevealGroup>
+            <p className="mile-label rv">Mile 002 · Receipts</p>
+            <h2 className="font-display rv mt-2 text-2xl font-extrabold sm:text-3xl" style={{ transitionDelay: '80ms' }}>
+              Don&apos;t take our word for it
+            </h2>
+          </RevealGroup>
+          <RevealGroup className="mt-4">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              {RECEIPTS.map((r, i) => (
+                <a
+                  key={r.label}
+                  href={r.href}
+                  className="rd-card rv block p-4 hover:border-amber-300"
+                  style={{ transitionDelay: `${i * 80}ms` }}
+                >
+                  <p className="font-landing-mono text-3xl font-semibold tabular-nums text-amber-300">
+                    <CountUp tokens={r.tokens} />
+                  </p>
+                  <p className="mt-2 text-sm text-slate-200">{r.label}</p>
+                  <p className="mt-2 text-xs font-semibold text-sky-300 underline">
+                    Evidence →
+                  </p>
+                </a>
+              ))}
+            </div>
+          </RevealGroup>
           <p className="mt-3 text-sm text-slate-300">
             Meta API spend for building and testing the app&apos;s AI features (models
             only — excludes coding-agent usage):{' '}
@@ -204,10 +214,12 @@ export default function Home() {
 
         {/* Mile 004 · Architecture */}
         <section aria-label="Architecture">
-          <p className="mile-label">Mile 004 · Architecture</p>
-          <h2 className="font-display mt-2 text-2xl font-extrabold sm:text-3xl">
-            The pipeline
-          </h2>
+          <RevealGroup>
+            <p className="mile-label rv">Mile 004 · Architecture</p>
+            <h2 className="font-display rv mt-2 text-2xl font-extrabold sm:text-3xl" style={{ transitionDelay: '80ms' }}>
+              The pipeline
+            </h2>
+          </RevealGroup>
           <div className="mt-4">
             <ArchDiagram />
           </div>
@@ -223,13 +235,19 @@ export default function Home() {
 
         {/* Mile 005 · Judge Q&A */}
         <section aria-label="Questions a judge would ask">
-          <p className="mile-label">Mile 005 · Judge Q&amp;A</p>
-          <h2 className="font-display mt-2 text-2xl font-extrabold sm:text-3xl">
-            Questions a judge would ask
-          </h2>
-          <div className="mt-4 flex flex-col gap-2">
-            {QA.map((item) => (
-              <details key={item.q} className="rd-qa p-4">
+          <RevealGroup>
+            <p className="mile-label rv">Mile 005 · Judge Q&amp;A</p>
+            <h2 className="font-display rv mt-2 text-2xl font-extrabold sm:text-3xl" style={{ transitionDelay: '80ms' }}>
+              Questions a judge would ask
+            </h2>
+          </RevealGroup>
+          <RevealGroup className="mt-4 flex flex-col gap-2">
+            {QA.map((item, i) => (
+              <details
+                key={item.q}
+                className="rd-qa rv p-4"
+                style={{ transitionDelay: `${i * 80}ms` }}
+              >
                 <summary className="text-base">
                   <span aria-hidden="true" className="qa-marker">▸</span>
                   {item.q}
@@ -237,40 +255,55 @@ export default function Home() {
                 <p className="mt-2 pl-6 text-sm leading-relaxed text-slate-300">{item.a}</p>
               </details>
             ))}
-          </div>
+          </RevealGroup>
         </section>
 
         {/* Mile 006 · Honest limits */}
         <section aria-label="What this doesn't prove yet" id="limits" className="scroll-mt-6">
-          <p className="mile-label">Mile 006 · Honest limits</p>
-          <h2 className="font-display mt-2 text-2xl font-extrabold sm:text-3xl">
-            What this doesn&apos;t prove yet
-          </h2>
-          <ul className="mt-4 flex flex-col gap-2">
-            {LIMITS.map((l) => (
-              <li key={l} className="rd-card flex gap-3 p-4 text-sm leading-relaxed text-slate-200">
+          <RevealGroup>
+            <p className="mile-label rv">Mile 006 · Honest limits</p>
+            <h2 className="font-display rv mt-2 text-2xl font-extrabold sm:text-3xl" style={{ transitionDelay: '80ms' }}>
+              What this doesn&apos;t prove yet
+            </h2>
+          </RevealGroup>
+          <RevealGroup className="mt-4">
+            <ul className="flex flex-col gap-2">
+              {LIMITS.map((l, i) => (
+                <li
+                  key={l}
+                  className="rd-card rv flex gap-3 p-4 text-sm leading-relaxed text-slate-200"
+                  style={{ transitionDelay: `${i * 80}ms` }}
+                >
                 <span aria-hidden="true" className="font-bold text-amber-300">—</span>
                 {l}
               </li>
-            ))}
-          </ul>
+              ))}
+            </ul>
+          </RevealGroup>
         </section>
 
         {/* Mile 007 · Built with Meta + CTA */}
         <section aria-label="Built with Meta">
-          <p className="mile-label">Mile 007 · Built with Meta</p>
-          <h2 className="font-display mt-2 text-2xl font-extrabold sm:text-3xl">
-            Four models, four jobs
-          </h2>
-          <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            {MODELS.map((m) => (
-              <div key={m.name} className="rd-card p-4">
+          <RevealGroup>
+            <p className="mile-label rv">Mile 007 · Built with Meta</p>
+            <h2 className="font-display rv mt-2 text-2xl font-extrabold sm:text-3xl" style={{ transitionDelay: '80ms' }}>
+              Four models, four jobs
+            </h2>
+          </RevealGroup>
+          <RevealGroup className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            {MODELS.map((m, i) => (
+              <div
+                key={m.name}
+                className="rd-card rv p-4"
+                style={{ transitionDelay: `${i * 80}ms` }}
+              >
                 <p className="font-display text-base font-extrabold">{m.name}</p>
                 <p className="mt-1 text-sm text-slate-300">{m.job}</p>
               </div>
             ))}
-          </div>
-          <div className="rd-card mt-8 p-6 text-center">
+          </RevealGroup>
+          <RevealGroup className="mt-8">
+            <div className="rd-card rv p-6 text-center">
             <h2 className="font-display text-2xl font-extrabold sm:text-3xl">See it in action</h2>
             <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:justify-center sm:flex-wrap">
               <Link
@@ -292,7 +325,8 @@ export default function Home() {
                 Judge path
               </Link>
             </div>
-          </div>
+            </div>
+          </RevealGroup>
         </section>
 
         <footer className="flex flex-col gap-2 border-t border-slate-700 pt-4 text-sm text-slate-400">
